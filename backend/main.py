@@ -24,7 +24,7 @@ from typing import Any, Dict
 import joblib
 import librosa
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 # ---------------------------------------------------------------------------
@@ -76,19 +76,14 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 
-def _load_model() -> Any:
-    """Return the cached scikit-learn model, loading it from disk once.
+def _load_model() -> Any | None:
+    """Return the cached scikit-learn model when available.
 
     Returns
     -------
-    model
-        A fitted scikit-learn estimator that exposes ``predict`` and
-        ``predict_proba``.
-
-    Raises
-    ------
-    HTTPException (503)
-        If the model file does not exist or cannot be deserialised.
+    The deployed MVP must keep /predict-cough responsive even when a model
+    artifact is missing, so model load failures are logged and handled by the
+    request-level heuristic fallback instead of marking the service unavailable.
     """
     global _MODEL_CACHE, _MODEL_LOAD_ERROR
 
@@ -96,21 +91,23 @@ def _load_model() -> Any:
         return _MODEL_CACHE
 
     if _MODEL_LOAD_ERROR is not None:
-        raise HTTPException(status_code=503, detail=_MODEL_LOAD_ERROR)
+        return None
 
     if not MODEL_PATH.is_file():
         _MODEL_LOAD_ERROR = (
             f"Model file not found at '{MODEL_PATH}'. "
             "Run 'python create_mock_model.py' or 'python train_model.py' first."
         )
-        raise HTTPException(status_code=503, detail=_MODEL_LOAD_ERROR)
+        logger.warning(_MODEL_LOAD_ERROR)
+        return None
 
     load_started = time.perf_counter()
     try:
         _MODEL_CACHE = joblib.load(MODEL_PATH)
     except Exception as exc:
         _MODEL_LOAD_ERROR = f"Failed to load model: {exc}"
-        raise HTTPException(status_code=503, detail=_MODEL_LOAD_ERROR)
+        logger.exception(exc)
+        return None
 
     logger.info(
         "model loaded path=%s elapsed=%.3fs",
@@ -123,10 +120,9 @@ def _load_model() -> Any:
 @app.on_event("startup")
 def warm_model_on_startup() -> None:
     """Warm the demo model once so /predict-cough stays lightweight."""
-    try:
-        _load_model()
-    except HTTPException as exc:
-        logger.warning("model warmup skipped: %s", exc.detail)
+    model = _load_model()
+    if model is None:
+        logger.warning("model warmup skipped; heuristic fallback remains available")
 
 
 def _load_audio(audio_path: str) -> tuple[np.ndarray, int]:
@@ -134,16 +130,10 @@ def _load_audio(audio_path: str) -> tuple[np.ndarray, int]:
     try:
         y, sr = librosa.load(audio_path, sr=SAMPLE_RATE, mono=True)
     except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not decode the uploaded audio file: {exc}",
-        )
+        raise ValueError(f"Could not decode the uploaded audio file: {exc}") from exc
 
     if len(y) == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="The uploaded audio file is empty (zero samples).",
-        )
+        raise ValueError("The uploaded audio file is empty (zero samples).")
 
     return y.astype(np.float32), sr
 
@@ -289,18 +279,99 @@ def _extract_mfcc_features(y: np.ndarray, sr: int) -> np.ndarray:
 
     Raises
     ------
-    HTTPException (400)
-        If the audio file cannot be decoded or is too short.
+    ValueError
+        If the audio array is empty.
     """
     if len(y) == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="The uploaded audio file is empty (zero samples).",
-        )
+        raise ValueError("The uploaded audio file is empty (zero samples).")
 
     mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC)
     mfcc_mean: np.ndarray = np.mean(mfccs, axis=1)  # shape (N_MFCC,)
     return mfcc_mean
+
+
+def _safe_prediction_response(
+    *,
+    label: str = "unclear",
+    confidence: float = 0.0,
+    message: str = "ไม่สามารถวิเคราะห์เสียงได้ชัดเจน",
+    quality: Dict[str, Any] | None = None,
+    probabilities: Dict[str, float] | None = None,
+    confidence_calibrated: bool = False,
+    model_loaded: bool = False,
+    model_mode: str = "demo_model",
+) -> Dict[str, Any]:
+    """Build a stable HTTP 200 prediction response for the frontend."""
+    return {
+        "label": label,
+        "confidence": round(float(confidence), 4),
+        "message": message,
+        "probabilities": probabilities or {},
+        "quality": quality or {},
+        "model_mode": model_mode,
+        "model_loaded": model_loaded,
+        "confidence_calibrated": confidence_calibrated,
+    }
+
+
+def _normalize_prediction_label(prediction: str) -> str:
+    """Map model-specific labels into the small public API label set."""
+    if prediction in {"cough", "non_cough", "too_quiet", "too_short", "unclear"}:
+        return prediction
+    return "unclear"
+
+
+def _demo_heuristic_prediction(quality: Dict[str, Any]) -> Dict[str, Any]:
+    """Fallback cough screening when the demo model artifact is unavailable."""
+    cough_like_bursts = int(quality.get("cough_like_bursts") or 0)
+    rms_energy = float(quality.get("rms_energy") or 0.0)
+    peak_amplitude = float(quality.get("peak_amplitude") or 0.0)
+
+    if cough_like_bursts >= 1 and rms_energy >= MIN_AUTO_CAPTURE_RMS and peak_amplitude >= MIN_AUTO_CAPTURE_PEAK:
+        return _safe_prediction_response(
+            label="cough",
+            confidence=AUTO_CAPTURE_ACCEPTANCE_CONFIDENCE,
+            message=(
+                "ระบบตรวจพบช่วงเสียงที่มีรูปแบบคล้ายเสียงไอและคุณภาพเสียงเพียงพอ "
+                "สำหรับการคัดกรองเบื้องต้น"
+            ),
+            quality=quality,
+            probabilities={"cough": AUTO_CAPTURE_ACCEPTANCE_CONFIDENCE},
+            confidence_calibrated=True,
+            model_loaded=False,
+            model_mode="demo_heuristic_fallback",
+        )
+
+    if cough_like_bursts >= 1:
+        return _safe_prediction_response(
+            label="unclear",
+            confidence=0.45,
+            message="พบรูปแบบเสียงที่คล้ายเสียงไอ แต่ยังไม่ชัดเจน กรุณาลองใหม่อีกครั้ง",
+            quality=quality,
+            probabilities={"unclear": 0.45},
+            model_loaded=False,
+            model_mode="demo_heuristic_fallback",
+        )
+
+    return _safe_prediction_response(
+        label="non_cough",
+        confidence=0.55,
+        message="ยังไม่พบรูปแบบเสียงไอที่ชัดเจน",
+        quality=quality,
+        probabilities={"non_cough": 0.55},
+        model_loaded=False,
+        model_mode="demo_heuristic_fallback",
+    )
+
+
+def _log_final_prediction(response: Dict[str, Any], request_started: float) -> None:
+    """Log the final prediction in a consistent shape for Render logs."""
+    logger.info(
+        "predict-cough final label=%s final_confidence=%.4f total_processing_time=%.3fs",
+        response.get("label"),
+        float(response.get("confidence") or 0.0),
+        time.perf_counter() - request_started,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -333,39 +404,43 @@ async def health() -> Dict[str, str]:
 
 @app.post("/predict-cough", summary="Classify an uploaded cough audio file")
 async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
-    """Accept an audio upload, extract MFCC features, and classify it.
+    """Accept an audio upload and return a safe cough-screening result.
 
-    The endpoint saves the upload to a temporary file, extracts 13 mean MFCC
-    coefficients, and feeds them into the pre-trained Random Forest model.
-
-    Parameters
-    ----------
-    file : UploadFile
-        The audio file to classify (WAV, MP3, OGG, FLAC, etc.).
-
-    Returns
-    -------
-    dict
-        JSON object with keys ``label``, ``confidence``, and
-        ``probabilities``.
-
-    Raises
-    ------
-    HTTPException
-        400 if the audio is invalid; 503 if the model is unavailable.
+    Audio/model problems intentionally return HTTP 200 with a conservative
+    label so the frontend can guide the user instead of treating the backend
+    as unavailable.
     """
     request_started = time.perf_counter()
-    logger.info("predict-cough request received filename=%s", file.filename)
+    logger.info(
+        "predict-cough request received filename=%s content_type=%s",
+        file.filename,
+        file.content_type,
+    )
 
-    # Validate that a file was actually uploaded
     if file.filename is None or file.filename.strip() == "":
-        raise HTTPException(status_code=400, detail="No file was uploaded.")
+        response = _safe_prediction_response(
+            label="unclear",
+            confidence=0.0,
+            message="ไม่สามารถวิเคราะห์เสียงได้ชัดเจน",
+            model_mode="input_validation",
+        )
+        _log_final_prediction(response, request_started)
+        return response
 
     tmp_path: str | None = None
     try:
         contents = await file.read()
+        logger.info("predict-cough audio bytes size=%s", len(contents))
+
         if len(contents) == 0:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+            response = _safe_prediction_response(
+                label="too_short",
+                confidence=0.0,
+                message="เสียงสั้นเกินไป กรุณาอัดเสียงไอ 3–5 วินาที",
+                model_mode="quality_check",
+            )
+            _log_final_prediction(response, request_started)
+            return response
 
         # Persist only the captured cough segment so librosa can decode it.
         suffix = Path(file.filename).suffix or ".wav"
@@ -375,121 +450,140 @@ async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
 
         raw_audio, sr = _load_audio(tmp_path)
         logger.info(
-            "predict-cough audio loaded duration=%.3fs samples=%s bytes=%s elapsed=%.3fs",
+            "predict-cough audio loaded successfully duration=%.3fs samples=%s elapsed=%.3fs",
             len(raw_audio) / sr if sr else 0.0,
             len(raw_audio),
-            len(contents),
             time.perf_counter() - request_started,
         )
 
         quality = _check_audio_quality(raw_audio, sr)
+        cough_like_burst = bool(int(quality["cough_like_bursts"]))
+        logger.info(
+            "predict-cough audio quality duration=%.3fs rms=%.5f peak=%.5f cough_like_burst=%s",
+            float(quality["duration_seconds"]),
+            float(quality["rms_energy"]),
+            float(quality["peak_amplitude"]),
+            cough_like_burst,
+        )
 
         if not quality["ok"]:
-            response = {
-                "label": quality["label"],
-                "confidence": 0.0,
-                "message": quality["message"],
-                "quality": quality,
-                "model_mode": "demo_model",
-                "probabilities": {},
-            }
-            total_elapsed = time.perf_counter() - request_started
-            logger.info(
-                "predict-cough prediction completed label=%s confidence=0.0000 elapsed=%.3fs",
-                quality["label"],
-                total_elapsed,
+            response = _safe_prediction_response(
+                label=quality["label"],
+                confidence=0.0,
+                message=quality["message"],
+                quality=quality,
+                model_mode="quality_check",
             )
-            logger.info("predict-cough total processing time %.3fs", total_elapsed)
+            logger.info("predict-cough model loaded=false")
+            _log_final_prediction(response, request_started)
+            return response
+
+        model = _load_model()
+        model_loaded = model is not None
+        logger.info("predict-cough model loaded=%s", str(model_loaded).lower())
+
+        if model is None:
+            logger.warning("Model unavailable, using demo heuristic fallback")
+            response = _demo_heuristic_prediction(quality)
+            _log_final_prediction(response, request_started)
             return response
 
         processed_audio = _preprocess_audio(raw_audio, sr)
 
-        # Feature extraction
         features = _extract_mfcc_features(processed_audio, sr)
         logger.info(
             "predict-cough features extracted elapsed=%.3fs",
             time.perf_counter() - request_started,
         )
 
-        # Model inference
-        model = _load_model()
-        features_2d = features.reshape(1, -1)
+        try:
+            features_2d = features.reshape(1, -1)
+            raw_prediction = model.predict(features_2d)[0]
+            prediction = str(raw_prediction)
+            probabilities = model.predict_proba(features_2d)[0]
+            classes = [str(cls) for cls in list(model.classes_)]
 
-        raw_prediction = model.predict(features_2d)[0]
-        prediction = str(raw_prediction)
-        probabilities = model.predict_proba(features_2d)[0]
-        classes = [str(cls) for cls in list(model.classes_)]
+            prob_dict: Dict[str, float] = {
+                cls: round(float(prob), 4)
+                for cls, prob in zip(classes, probabilities)
+            }
 
-        # Build a {class_name: probability} mapping
-        prob_dict: Dict[str, float] = {
-            cls: round(float(prob), 4)
-            for cls, prob in zip(classes, probabilities)
-        }
-
-        # Confidence is the probability assigned to the predicted class
-        confidence = round(float(probabilities[classes.index(prediction)]), 4)
-        cough_probability = float(prob_dict.get("cough", 0.0))
-        noise_probability = float(prob_dict.get("noise", 0.0))
-        cough_like_bursts = int(quality["cough_like_bursts"])
-        rms_energy = float(quality["rms_energy"])
-        peak_amplitude = float(quality["peak_amplitude"])
-        auto_capture_quality_ok = (
-            cough_like_bursts >= 1
-            and rms_energy >= MIN_AUTO_CAPTURE_RMS
-            and peak_amplitude >= MIN_AUTO_CAPTURE_PEAK
-            and not (prediction == "noise" and noise_probability >= STRONG_NOISE_THRESHOLD)
-        )
-
-        # Demo-model guardrail: this repository ships a synthetic MFCC model.
-        # For MVP demos, strong cough-like bursts should not be hidden behind a
-        # fragile or poorly calibrated class probability just because the mock
-        # model is uncertain. This is still a demo screening signal, not a
-        # medical diagnosis.
-        label = prediction
-        message = None
-        confidence_calibrated = False
-
-        if auto_capture_quality_ok:
-            label = "cough"
-            confidence = round(max(confidence, cough_probability, AUTO_CAPTURE_ACCEPTANCE_CONFIDENCE), 4)
-            confidence_calibrated = True
-            message = (
-                "ระบบตรวจพบช่วงเสียงที่มีรูปแบบคล้ายเสียงไอและคุณภาพเสียงเพียงพอ "
-                "สำหรับการคัดกรองเบื้องต้น"
+            confidence = round(float(probabilities[classes.index(prediction)]), 4)
+            cough_probability = float(prob_dict.get("cough", 0.0))
+            noise_probability = float(prob_dict.get("noise", 0.0))
+            cough_like_bursts = int(quality["cough_like_bursts"])
+            rms_energy = float(quality["rms_energy"])
+            peak_amplitude = float(quality["peak_amplitude"])
+            auto_capture_quality_ok = (
+                cough_like_bursts >= 1
+                and rms_energy >= MIN_AUTO_CAPTURE_RMS
+                and peak_amplitude >= MIN_AUTO_CAPTURE_PEAK
+                and not (prediction == "noise" and noise_probability >= STRONG_NOISE_THRESHOLD)
             )
-        elif cough_like_bursts >= 1 and (
-            prediction == "noise"
-            or confidence < LOW_CONFIDENCE_THRESHOLD
-            or (prediction == "non_cough" and cough_probability >= 0.22)
-            or (prediction == "non_cough" and cough_like_bursts >= 2 and confidence < 0.78)
-        ):
-            label = "uncertain_cough"
-            confidence = round(max(cough_probability, 0.45), 4)
-            message = (
-                "ระบบพบรูปแบบเสียงที่คล้ายเสียงไอ แต่ยังไม่มั่นใจ "
-                "กรุณาไออีกครั้งหรือใช้ข้อมูลประกอบร่วมด้วย"
-            )
-        elif prediction == "noise" and confidence < STRONG_NOISE_THRESHOLD:
-            label = "unclear"
-            message = "เสียงไม่ชัดเจน กรุณาอัดเสียงใหม่หากต้องการผลที่แม่นยำขึ้น"
 
-        response = {
-            "label": label,
-            "confidence": confidence,
-            "message": message,
-            "probabilities": prob_dict,
-            "quality": quality,
-            "model_mode": "demo_model",
-            "confidence_calibrated": confidence_calibrated,
-        }
-        total_elapsed = time.perf_counter() - request_started
-        logger.info(
-            "predict-cough prediction completed label=%s confidence=%.4f elapsed=%.3fs",
-            label,
-            confidence,
-            total_elapsed,
+            label = _normalize_prediction_label(prediction)
+            message = None
+            confidence_calibrated = False
+
+            if auto_capture_quality_ok:
+                label = "cough"
+                confidence = round(max(confidence, cough_probability, AUTO_CAPTURE_ACCEPTANCE_CONFIDENCE), 4)
+                confidence_calibrated = True
+                message = (
+                    "ระบบตรวจพบช่วงเสียงที่มีรูปแบบคล้ายเสียงไอและคุณภาพเสียงเพียงพอ "
+                    "สำหรับการคัดกรองเบื้องต้น"
+                )
+            elif cough_like_bursts >= 1 and (
+                label == "unclear"
+                or confidence < LOW_CONFIDENCE_THRESHOLD
+                or (label == "non_cough" and cough_probability >= 0.22)
+                or (label == "non_cough" and cough_like_bursts >= 2 and confidence < 0.78)
+            ):
+                label = "unclear"
+                confidence = round(max(cough_probability, 0.45), 4)
+                message = "พบรูปแบบเสียงที่คล้ายเสียงไอ แต่ยังไม่ชัดเจน กรุณาลองใหม่อีกครั้ง"
+            elif label == "unclear":
+                message = "ไม่สามารถวิเคราะห์เสียงได้ชัดเจน"
+            elif label == "non_cough":
+                message = "ยังไม่พบรูปแบบเสียงไอที่ชัดเจน"
+
+            response = _safe_prediction_response(
+                label=label,
+                confidence=confidence,
+                message=message or "วิเคราะห์เสียงสำเร็จ",
+                quality=quality,
+                probabilities=prob_dict,
+                confidence_calibrated=confidence_calibrated,
+                model_loaded=True,
+                model_mode="demo_model",
+            )
+        except Exception as exc:
+            logger.exception(exc)
+            logger.warning("Model unavailable, using demo heuristic fallback")
+            response = _demo_heuristic_prediction(quality)
+
+        _log_final_prediction(response, request_started)
+        return response
+    except ValueError as exc:
+        logger.exception(exc)
+        response = _safe_prediction_response(
+            label="unclear",
+            confidence=0.0,
+            message="ไม่สามารถวิเคราะห์เสียงได้ชัดเจน",
+            model_mode="audio_decode_error",
         )
-        logger.info("predict-cough total processing time %.3fs", total_elapsed)
+        _log_final_prediction(response, request_started)
+        return response
+    except Exception as exc:
+        logger.exception(exc)
+        response = _safe_prediction_response(
+            label="unclear",
+            confidence=0.0,
+            message="เกิดข้อผิดพลาดในการวิเคราะห์เสียง กรุณาลองใหม่อีกครั้ง",
+            confidence_calibrated=False,
+            model_mode="unexpected_error",
+        )
+        _log_final_prediction(response, request_started)
         return response
     finally:
         # Clean up the temporary file
