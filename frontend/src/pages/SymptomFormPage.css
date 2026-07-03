@@ -1,0 +1,143 @@
+.symptom-page {
+  display: grid;
+  gap: 18px;
+}
+
+.symptom-page .page-heading {
+  margin-bottom: 0;
+  border: 1px solid rgba(0, 82, 255, 0.12);
+  border-radius: 30px;
+  background:
+    radial-gradient(circle at 92% 0%, rgba(77, 124, 255, 0.12), transparent 34%),
+    #ffffff;
+  box-shadow: var(--shadow-soft);
+  padding: clamp(22px, 4vw, 30px);
+}
+
+.symptom-page .page-heading h2 {
+  max-width: 680px;
+  font-size: clamp(1.6rem, 3.5vw, 2.35rem);
+}
+
+.symptom-page .page-heading p:not(.section-kicker) {
+  max-width: 760px;
+  font-weight: 700;
+}
+
+.ai-summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid rgba(0, 82, 255, 0.14);
+  border-radius: 24px;
+  background: linear-gradient(135deg, rgba(0, 82, 255, 0.07), #ffffff 72%);
+  box-shadow: var(--shadow-soft);
+  padding: 16px;
+}
+
+.ai-summary-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
+  color: #ffffff;
+  padding: 7px 12px;
+  font-size: 0.82rem;
+  font-weight: 900;
+  white-space: nowrap;
+  box-shadow: 0 12px 22px rgba(0, 82, 255, 0.16);
+}
+
+.ai-summary strong {
+  color: var(--text-primary);
+  font-weight: 900;
+}
+
+.ai-summary p {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.assessment-form {
+  display: grid;
+  gap: 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 32px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  padding: clamp(20px, 4vw, 30px);
+}
+
+.form-flow-note {
+  display: grid;
+  gap: 5px;
+  border: 1px solid rgba(0, 82, 255, 0.14);
+  border-radius: 24px;
+  background:
+    linear-gradient(135deg, rgba(0, 82, 255, 0.08), rgba(34, 211, 238, 0.08)),
+    #ffffff;
+  padding: 16px;
+}
+
+.form-flow-note span {
+  color: var(--brand-primary);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.form-flow-note strong {
+  color: var(--text-primary);
+  font-size: 1.04rem;
+  font-weight: 900;
+}
+
+.symptom-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.symptom-label-text {
+  color: inherit;
+  font-weight: 800;
+}
+
+.radio-group {
+  display: grid;
+  gap: 12px;
+}
+
+.symptom-page .checkbox-card,
+.symptom-page .radio-card {
+  min-height: 62px;
+  border-radius: 22px;
+  background: #ffffff;
+}
+
+.symptom-page .checkbox-card:hover,
+.symptom-page .radio-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+}
+
+.symptom-page .checkbox-card.active,
+.symptom-page .radio-card.active {
+  border-color: rgba(0, 82, 255, 0.42);
+  background: linear-gradient(135deg, rgba(0, 82, 255, 0.08), #ffffff 78%);
+  box-shadow: 0 12px 26px rgba(0, 82, 255, 0.1);
+}
+
+@media (max-width: 640px) {
+  .symptom-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .ai-summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

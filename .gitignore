@@ -1,0 +1,58 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+venv/
+env/
+.venv/
+.env
+
+# === Node.js ===
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# === Vite / React ===
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# === Model files ===
+backend/model/*.joblib
+backend/model/*.pkl
+backend/model/*.h5
+!backend/model/.gitkeep
+
+# === Dataset / Audio files ===
+backend/data/cough/*.wav
+backend/data/cough/*.mp3
+backend/data/cough/*.ogg
+backend/data/cough/*.flac
+backend/data/non_cough/*.wav
+backend/data/non_cough/*.mp3
+backend/data/non_cough/*.ogg
+backend/data/non_cough/*.flac
+backend/data/noise/*.wav
+backend/data/noise/*.mp3
+backend/data/noise/*.ogg
+backend/data/noise/*.flac
+datasets/
+!backend/data/**/.gitkeep
+
+# === Temp / OS files ===
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# === IDE ===
+.vscode/
+.idea/
+*.iml

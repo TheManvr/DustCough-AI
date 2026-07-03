@@ -1,0 +1,75 @@
+INFO:     Will watch for changes in these directories: ['C:\\Users\\PC\\Desktop\\DustCoughAI\\backend']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [17136] using StatReload
+INFO:     Started server process [552]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:57209 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59608 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59883 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55040 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58247 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55328 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52151 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59560 - "POST /predict-cough HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [552]
+INFO:     Started server process [20528]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  StatReload detected changes in 'main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [20528]
+INFO:     Started server process [20344]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:59293 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63093 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63095 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60995 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60997 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57148 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52881 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50917 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50919 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57798 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57886 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64062 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60289 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62587 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51200 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62749 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55577 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53985 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61708 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62877 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49687 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58946 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49895 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51049 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64019 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64022 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52848 - "POST /predict-cough HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64033 - "POST /predict-cough HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [20344]
+INFO:     Started server process [19208]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:52365 - "POST /predict-cough HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [19208]
+INFO:     Started server process [21312]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
