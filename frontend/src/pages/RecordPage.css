@@ -206,6 +206,24 @@
   color: var(--risk-medium);
 }
 
+.record-retry-btn {
+  width: fit-content;
+  min-height: 42px;
+  margin-top: 8px;
+  border: 1px solid rgba(0, 82, 255, 0.16);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--brand-primary);
+  font-weight: 900;
+  padding: 10px 16px;
+  box-shadow: 0 10px 24px rgba(0, 82, 255, 0.12);
+}
+
+.record-retry-btn:hover {
+  border-color: var(--brand-primary);
+  background: var(--brand-soft);
+}
+
 .record-hint,
 .ai-context-note {
   max-width: 520px;

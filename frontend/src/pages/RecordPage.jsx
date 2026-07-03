@@ -15,6 +15,8 @@ const TRIGGER_MULTIPLIER = 3.2
 const MIN_BURST_SECONDS = 0.055
 const MAX_BURST_SECONDS = 1.15
 const ACCEPTED_COUGH_CONFIDENCE = 0.7
+const PREDICT_TIMEOUT_MS = 30_000
+const PREDICT_TIMEOUT_MESSAGE = 'การวิเคราะห์ใช้เวลานานเกินไป อาจเกิดจากเซิร์ฟเวอร์กำลังเริ่มทำงาน กรุณาลองใหม่อีกครั้ง'
 const IDLE_WAVEFORM_LEVELS = Array.from(
   { length: WAVEFORM_BAR_COUNT },
   (_, index) => 0.24 + (index % 5) * 0.07,
@@ -103,6 +105,32 @@ function isAcceptedCough(aiResult) {
   return aiResult?.label === 'cough' && Number(aiResult.confidence || 0) >= ACCEPTED_COUGH_CONFIDENCE
 }
 
+function normalizeBackendLabel(label) {
+  if (label === 'noise' || label === 'unknown' || !label) return 'unclear'
+  return label
+}
+
+function getRejectedAnalysisMessage(aiResult) {
+  const confidencePercent = Math.round((Number(aiResult.confidence) || 0) * 100)
+
+  switch (aiResult.label) {
+    case 'cough':
+      return `ตรวจพบเสียงไอ แต่ความมั่นใจยังไม่ถึง 70% (${confidencePercent}%) กรุณาลองตรวจจับใหม่`
+    case 'non_cough':
+      return 'ยังไม่พบเสียงไอที่ชัดเจน กรุณากดลองตรวจจับใหม่แล้วไออีกครั้ง'
+    case 'unclear':
+      return 'พบเสียงที่ยังไม่ชัดเจน กรุณาลองใหม่ในที่เงียบขึ้นและไอใกล้ไมโครโฟนมากขึ้น'
+    case 'too_quiet':
+      return 'เสียงเบาเกินไป กรุณาขยับเข้าใกล้ไมโครโฟนมากขึ้น'
+    case 'too_short':
+      return 'เสียงสั้นเกินไป กรุณาไอ 1–2 ครั้งให้ชัดเจนแล้วลองตรวจจับใหม่'
+    case 'uncertain_cough':
+      return `พบรูปแบบเสียงที่คล้ายเสียงไอ แต่ความมั่นใจยังไม่สูง (${confidencePercent}%) กรุณาลองตรวจจับใหม่`
+    default:
+      return 'ระบบยังไม่สามารถยืนยันเสียงไอได้ กรุณาลองตรวจจับใหม่อีกครั้ง'
+  }
+}
+
 function RecordPage() {
   const navigate = useNavigate()
 
@@ -117,9 +145,12 @@ function RecordPage() {
   const audioContextRef = useRef(null)
   const sourceNodeRef = useRef(null)
   const processorRef = useRef(null)
+  const mediaRecorderRef = useRef(null)
   const analyserRef = useRef(null)
   const zeroGainRef = useRef(null)
   const waveformFrameRef = useRef(null)
+  const analysisAbortControllerRef = useRef(null)
+  const analysisTimeoutRef = useRef(null)
   const listeningStartedAtRef = useRef(0)
   const stateRef = useRef('idle')
   const sampleRateRef = useRef(0)
@@ -131,12 +162,17 @@ function RecordPage() {
   const noiseRmsValuesRef = useRef([])
   const backgroundRmsRef = useRef(0.012)
   const activeBurstSecondsRef = useRef(0)
-  const restartTimerRef = useRef(null)
-  const shouldAutoRestartRef = useRef(false)
 
   const setMode = useCallback((nextState) => {
     stateRef.current = nextState
     setCaptureState(nextState)
+  }, [])
+
+  const clearAnalysisTimeout = useCallback(() => {
+    if (analysisTimeoutRef.current) {
+      clearTimeout(analysisTimeoutRef.current)
+      analysisTimeoutRef.current = null
+    }
   }, [])
 
   const stopWaveform = useCallback(() => {
@@ -149,6 +185,15 @@ function RecordPage() {
 
   const stopMicrophone = useCallback(() => {
     stopWaveform()
+
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop()
+      } catch {
+        // MediaRecorder may already be stopping; cleanup should stay best-effort.
+      }
+    }
+    mediaRecorderRef.current = null
 
     if (processorRef.current) {
       processorRef.current.onaudioprocess = null
@@ -194,6 +239,11 @@ function RecordPage() {
   }, [])
 
   const startListening = useCallback(async () => {
+    if (analysisAbortControllerRef.current) {
+      analysisAbortControllerRef.current.abort()
+      analysisAbortControllerRef.current = null
+    }
+    clearAnalysisTimeout()
     setPermError(null)
     setAnalysisError(null)
     setRetryMessage('')
@@ -256,23 +306,28 @@ function RecordPage() {
       setMode('error')
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetCaptureBuffers, setMode, stopMicrophone])
+  }, [clearAnalysisTimeout, resetCaptureBuffers, setMode, stopMicrophone])
 
-  const queueRestartListening = useCallback((message) => {
-    shouldAutoRestartRef.current = true
+  const showRetryState = useCallback((message) => {
+    clearAnalysisTimeout()
+    stopMicrophone()
+    resetCaptureBuffers()
     setRetryMessage(message)
-    setMode('retry_listening')
-
-    if (restartTimerRef.current) clearTimeout(restartTimerRef.current)
-    restartTimerRef.current = setTimeout(() => {
-      restartTimerRef.current = null
-      if (shouldAutoRestartRef.current) startListening()
-    }, 850)
-  }, [setMode, startListening])
+    setAnalysisError(message)
+    setWaveformLevels(IDLE_WAVEFORM_LEVELS)
+    setMode('error')
+  }, [clearAnalysisTimeout, resetCaptureBuffers, setMode, stopMicrophone])
 
   const analyzeCapturedAudio = useCallback(async (blob) => {
     setMode('analyzing')
     setAnalysisError(null)
+    setRetryMessage('')
+
+    const controller = new AbortController()
+    analysisAbortControllerRef.current = controller
+    analysisTimeoutRef.current = setTimeout(() => {
+      controller.abort()
+    }, PREDICT_TIMEOUT_MS)
 
     try {
       const formData = new FormData()
@@ -281,6 +336,7 @@ function RecordPage() {
       const res = await fetch(`${API_BASE_URL}/predict-cough`, {
         method: 'POST',
         body: formData,
+        signal: controller.signal,
       })
 
       if (!res.ok) {
@@ -289,7 +345,7 @@ function RecordPage() {
 
       const data = await res.json()
       const aiResult = {
-        label: data.label || data.prediction || 'unknown',
+        label: normalizeBackendLabel(data.label || data.prediction),
         confidence: data.confidence != null
           ? data.confidence
           : data.probability != null
@@ -300,22 +356,24 @@ function RecordPage() {
       }
 
       if (isAcceptedCough(aiResult)) {
-        shouldAutoRestartRef.current = false
         setMode('accepted')
         navigate('/symptoms', { state: { aiResult } })
         return
       }
 
-      const confidencePercent = Math.round((aiResult.confidence || 0) * 100)
-      const message = aiResult.label === 'too_quiet'
-        ? STATE_TEXT.too_quiet
-        : `AI ยังไม่มั่นใจว่าเป็นเสียงไอถึง 70% (${confidencePercent}%) กรุณาไออีกครั้ง`
-      queueRestartListening(message)
+      showRetryState(getRejectedAnalysisMessage(aiResult))
     } catch (err) {
-      setAnalysisError(`${copy.recordAnalysisFail} (${err.message})`)
-      setMode('error')
+      const message = err.name === 'AbortError'
+        ? PREDICT_TIMEOUT_MESSAGE
+        : `${copy.recordAnalysisFail} (${err.message})`
+      showRetryState(message)
+    } finally {
+      clearAnalysisTimeout()
+      if (analysisAbortControllerRef.current === controller) {
+        analysisAbortControllerRef.current = null
+      }
     }
-  }, [navigate, queueRestartListening, setMode])
+  }, [clearAnalysisTimeout, navigate, setMode, showRetryState])
 
   const finalizeCapture = useCallback(() => {
     if (finalizeStartedRef.current) return
@@ -416,27 +474,42 @@ function RecordPage() {
   }, [finalizeCapture, pushRollingChunk, setMode])
 
   const cancelListening = useCallback(() => {
-    shouldAutoRestartRef.current = false
-    if (restartTimerRef.current) {
-      clearTimeout(restartTimerRef.current)
-      restartTimerRef.current = null
+    if (analysisAbortControllerRef.current) {
+      analysisAbortControllerRef.current.abort()
+      analysisAbortControllerRef.current = null
     }
+    clearAnalysisTimeout()
     stopMicrophone()
+    resetCaptureBuffers()
     setMode('idle')
+    setAnalysisError(null)
     setRetryMessage('')
     setWaveformLevels(IDLE_WAVEFORM_LEVELS)
-  }, [setMode, stopMicrophone])
+  }, [clearAnalysisTimeout, resetCaptureBuffers, setMode, stopMicrophone])
 
   useEffect(() => {
     return () => {
-      shouldAutoRestartRef.current = false
-      if (restartTimerRef.current) clearTimeout(restartTimerRef.current)
+      if (analysisAbortControllerRef.current) {
+        analysisAbortControllerRef.current.abort()
+        analysisAbortControllerRef.current = null
+      }
+      clearAnalysisTimeout()
       stopMicrophone()
     }
-  }, [stopMicrophone])
+  }, [clearAnalysisTimeout, stopMicrophone])
 
   const isMicActive = captureState === 'listening' || captureState === 'cough_candidate_detected' || captureState === 'capturing'
   const isBusy = isMicActive || captureState === 'analyzing' || captureState === 'retry_listening' || captureState === 'accepted'
+  const primaryButtonText = captureState === 'error'
+    ? 'ลองตรวจจับใหม่'
+    : isMicActive
+      ? 'หยุดตรวจจับ'
+      : 'เริ่มตรวจจับ'
+  const primaryButtonAria = captureState === 'error'
+    ? 'ลองตรวจจับเสียงไอใหม่'
+    : isMicActive
+      ? 'หยุดตรวจจับเสียงไอ'
+      : 'เริ่มตรวจจับเสียงไอ'
 
   return (
     <div className="record-page">
@@ -491,11 +564,11 @@ function RecordPage() {
             className={`record-btn ${isMicActive ? 'recording' : ''}`}
             onClick={isMicActive || captureState === 'retry_listening' ? cancelListening : startListening}
             disabled={captureState === 'analyzing' || captureState === 'accepted'}
-            aria-label={isMicActive ? 'หยุดตรวจจับเสียงไอ' : 'เริ่มตรวจจับเสียงไอ'}
+            aria-label={primaryButtonAria}
             type="button"
           >
             <span className="record-btn-icon">
-              {isMicActive ? 'หยุดตรวจจับ' : 'เริ่มตรวจจับ'}
+              {primaryButtonText}
             </span>
           </button>
           <span className="listening-ring" aria-hidden="true" />
@@ -524,6 +597,9 @@ function RecordPage() {
         <div className="error-message mt-16">
           <strong>{copy.recordAnalysisFailTitle}</strong>
           <span>{analysisError}</span>
+          <button className="record-retry-btn" onClick={startListening} type="button">
+            ลองตรวจจับใหม่
+          </button>
         </div>
       )}
     </div>

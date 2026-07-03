@@ -278,6 +278,17 @@ def _extract_mfcc_features(y: np.ndarray, sr: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+@app.get("/", summary="Backend service info")
+def root() -> Dict[str, str]:
+    """Return basic API service links for deployment smoke checks."""
+    return {
+        "name": "DustCough AI Backend",
+        "status": "running",
+        "docs": "/docs",
+        "health": "/health",
+    }
+
+
 @app.get("/health", summary="Health check")
 async def health() -> Dict[str, str]:
     """Return a simple liveness response.

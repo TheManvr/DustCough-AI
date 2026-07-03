@@ -14,13 +14,7 @@ Deploy this React + Vite app to Vercel.
 Set this in Vercel:
 
 ```text
-VITE_API_BASE_URL=https://YOUR_RENDER_BACKEND_URL
-```
-
-Example:
-
-```text
-VITE_API_BASE_URL=https://dustcough-ai-backend.onrender.com
+VITE_API_BASE_URL=https://dustcough-ai.onrender.com
 ```
 
 Do not put secret keys in `VITE_` variables. Vite exposes them to the browser.
