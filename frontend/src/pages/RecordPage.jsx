@@ -16,6 +16,10 @@ const MIN_BURST_SECONDS = 0.055
 const MAX_BURST_SECONDS = 1.15
 const ACCEPTED_COUGH_CONFIDENCE = 0.7
 const API_TIMEOUT_MS = 60000
+const HEALTH_RETRY_INTERVAL_MS = 5000
+const HEALTH_MAX_WAIT_MS = 60000
+const SERVER_WAKE_MESSAGE = 'กำลังปลุกเซิร์ฟเวอร์วิเคราะห์เสียง กรุณารอสักครู่...'
+const SERVER_UNAVAILABLE_MESSAGE = 'เซิร์ฟเวอร์วิเคราะห์เสียงยังไม่พร้อม กรุณาลองใหม่อีกครั้ง'
 const PREDICT_TIMEOUT_MESSAGE = 'การวิเคราะห์ใช้เวลานานเกินไป กรุณาเปิดระบบอีกครั้งหรือกดตรวจจับใหม่'
 const IDLE_WAVEFORM_LEVELS = Array.from(
   { length: WAVEFORM_BAR_COUNT },
@@ -108,6 +112,86 @@ function isAcceptedCough(aiResult) {
 function normalizeBackendLabel(label) {
   if (label === 'noise' || label === 'unknown' || !label) return 'unclear'
   return label
+}
+
+function createAbortError() {
+  return new DOMException('Aborted', 'AbortError')
+}
+
+class BackendUnavailableError extends Error {
+  constructor() {
+    super(SERVER_UNAVAILABLE_MESSAGE)
+    this.name = 'BackendUnavailableError'
+  }
+}
+
+function wait(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(createAbortError())
+      return
+    }
+
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', abortWait)
+      resolve()
+    }, ms)
+
+    function abortWait() {
+      clearTimeout(timer)
+      reject(createAbortError())
+    }
+
+    signal.addEventListener('abort', abortWait, { once: true })
+  })
+}
+
+async function checkBackendHealth(signal) {
+  const attemptController = new AbortController()
+  const abortAttempt = () => attemptController.abort()
+  const attemptTimer = setTimeout(() => attemptController.abort(), HEALTH_RETRY_INTERVAL_MS)
+
+  signal.addEventListener('abort', abortAttempt, { once: true })
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/health`, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: attemptController.signal,
+    })
+
+    if (!response.ok) return false
+
+    const data = await response.json().catch(() => null)
+    return data?.status === 'ok'
+  } catch {
+    if (signal.aborted) throw createAbortError()
+    return false
+  } finally {
+    clearTimeout(attemptTimer)
+    signal.removeEventListener('abort', abortAttempt)
+  }
+}
+
+async function waitForBackendHealth(signal, onWaiting) {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt <= HEALTH_MAX_WAIT_MS) {
+    const attemptStartedAt = Date.now()
+    const isReady = await checkBackendHealth(signal)
+    if (isReady) return
+
+    onWaiting()
+
+    const elapsedMs = Date.now() - startedAt
+    const remainingMs = HEALTH_MAX_WAIT_MS - elapsedMs
+    if (remainingMs <= 0) break
+
+    const retryDelayMs = Math.max(0, HEALTH_RETRY_INTERVAL_MS - (Date.now() - attemptStartedAt))
+    await wait(Math.min(retryDelayMs, remainingMs), signal)
+  }
+
+  throw new BackendUnavailableError()
 }
 
 function getRejectedAnalysisMessage(aiResult) {
@@ -325,13 +409,20 @@ function RecordPage() {
 
     const controller = new AbortController()
     analysisAbortControllerRef.current = controller
-    analysisTimeoutRef.current = setTimeout(() => {
-      controller.abort()
-    }, API_TIMEOUT_MS)
 
     try {
+      await waitForBackendHealth(controller.signal, () => {
+        setRetryMessage(SERVER_WAKE_MESSAGE)
+      })
+
+      setRetryMessage('')
+
       const formData = new FormData()
       formData.append('file', blob, 'auto-cough-capture.wav')
+
+      analysisTimeoutRef.current = setTimeout(() => {
+        controller.abort()
+      }, API_TIMEOUT_MS)
 
       const res = await fetch(`${API_BASE_URL}/predict-cough`, {
         method: 'POST',
@@ -363,9 +454,13 @@ function RecordPage() {
 
       showRetryState(getRejectedAnalysisMessage(aiResult))
     } catch (err) {
+      if (err.name === 'AbortError' && stateRef.current !== 'analyzing') return
+
       const message = err.name === 'AbortError'
         ? PREDICT_TIMEOUT_MESSAGE
-        : `${copy.recordAnalysisFail} (${err.message})`
+        : err.name === 'BackendUnavailableError'
+          ? SERVER_UNAVAILABLE_MESSAGE
+          : `${copy.recordAnalysisFail} (${err.message})`
       showRetryState(message)
     } finally {
       clearAnalysisTimeout()
@@ -589,7 +684,7 @@ function RecordPage() {
       {captureState === 'analyzing' && (
         <div className="loading-overlay">
           <img className="loading-logo" src={logos.abstractMark} alt={copy.recordLoadingAlt} />
-          <span className="loading-text">{STATE_TEXT.analyzing}</span>
+          <span className="loading-text">{retryMessage || STATE_TEXT.analyzing}</span>
         </div>
       )}
 
