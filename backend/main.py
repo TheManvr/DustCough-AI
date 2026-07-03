@@ -7,14 +7,17 @@ RandomForestClassifier.
 
 Endpoints
 ---------
+GET  /                - Service info.
 POST /predict-cough  – Upload an audio file and receive a classification.
 GET  /health         – Liveness probe.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -40,6 +43,12 @@ STRONG_NOISE_THRESHOLD: float = 0.88
 AUTO_CAPTURE_ACCEPTANCE_CONFIDENCE: float = 0.72
 MIN_AUTO_CAPTURE_RMS: float = 0.010
 MIN_AUTO_CAPTURE_PEAK: float = 0.055
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("dustcough")
+
+_MODEL_CACHE: Any | None = None
+_MODEL_LOAD_ERROR: str | None = None
 
 # ---------------------------------------------------------------------------
 # Application factory
@@ -68,7 +77,7 @@ app.add_middleware(
 
 
 def _load_model() -> Any:
-    """Load the serialised scikit-learn model from disk.
+    """Return the cached scikit-learn model, loading it from disk once.
 
     Returns
     -------
@@ -81,22 +90,43 @@ def _load_model() -> Any:
     HTTPException (503)
         If the model file does not exist or cannot be deserialised.
     """
+    global _MODEL_CACHE, _MODEL_LOAD_ERROR
+
+    if _MODEL_CACHE is not None:
+        return _MODEL_CACHE
+
+    if _MODEL_LOAD_ERROR is not None:
+        raise HTTPException(status_code=503, detail=_MODEL_LOAD_ERROR)
+
     if not MODEL_PATH.is_file():
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"Model file not found at '{MODEL_PATH}'. "
-                "Run 'python create_mock_model.py' or 'python train_model.py' first."
-            ),
+        _MODEL_LOAD_ERROR = (
+            f"Model file not found at '{MODEL_PATH}'. "
+            "Run 'python create_mock_model.py' or 'python train_model.py' first."
         )
+        raise HTTPException(status_code=503, detail=_MODEL_LOAD_ERROR)
+
+    load_started = time.perf_counter()
     try:
-        model = joblib.load(MODEL_PATH)
+        _MODEL_CACHE = joblib.load(MODEL_PATH)
     except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Failed to load model: {exc}",
-        )
-    return model
+        _MODEL_LOAD_ERROR = f"Failed to load model: {exc}"
+        raise HTTPException(status_code=503, detail=_MODEL_LOAD_ERROR)
+
+    logger.info(
+        "model loaded path=%s elapsed=%.3fs",
+        MODEL_PATH,
+        time.perf_counter() - load_started,
+    )
+    return _MODEL_CACHE
+
+
+@app.on_event("startup")
+def warm_model_on_startup() -> None:
+    """Warm the demo model once so /predict-cough stays lightweight."""
+    try:
+        _load_model()
+    except HTTPException as exc:
+        logger.warning("model warmup skipped: %s", exc.detail)
 
 
 def _load_audio(audio_path: str) -> tuple[np.ndarray, int]:
@@ -324,26 +354,38 @@ async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
     HTTPException
         400 if the audio is invalid; 503 if the model is unavailable.
     """
+    request_started = time.perf_counter()
+    logger.info("predict-cough request received filename=%s", file.filename)
+
     # Validate that a file was actually uploaded
     if file.filename is None or file.filename.strip() == "":
         raise HTTPException(status_code=400, detail="No file was uploaded.")
 
-    # Persist the upload to a temporary file so librosa can read it
-    suffix = Path(file.filename).suffix or ".wav"
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    tmp_path: str | None = None
     try:
         contents = await file.read()
         if len(contents) == 0:
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-        with os.fdopen(tmp_fd, "wb") as tmp_file:
+        # Persist only the captured cough segment so librosa can decode it.
+        suffix = Path(file.filename).suffix or ".wav"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             tmp_file.write(contents)
+            tmp_path = tmp_file.name
 
         raw_audio, sr = _load_audio(tmp_path)
+        logger.info(
+            "predict-cough audio loaded duration=%.3fs samples=%s bytes=%s elapsed=%.3fs",
+            len(raw_audio) / sr if sr else 0.0,
+            len(raw_audio),
+            len(contents),
+            time.perf_counter() - request_started,
+        )
+
         quality = _check_audio_quality(raw_audio, sr)
 
         if not quality["ok"]:
-            return {
+            response = {
                 "label": quality["label"],
                 "confidence": 0.0,
                 "message": quality["message"],
@@ -351,11 +393,23 @@ async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
                 "model_mode": "demo_model",
                 "probabilities": {},
             }
+            total_elapsed = time.perf_counter() - request_started
+            logger.info(
+                "predict-cough prediction completed label=%s confidence=0.0000 elapsed=%.3fs",
+                quality["label"],
+                total_elapsed,
+            )
+            logger.info("predict-cough total processing time %.3fs", total_elapsed)
+            return response
 
         processed_audio = _preprocess_audio(raw_audio, sr)
 
         # Feature extraction
         features = _extract_mfcc_features(processed_audio, sr)
+        logger.info(
+            "predict-cough features extracted elapsed=%.3fs",
+            time.perf_counter() - request_started,
+        )
 
         # Model inference
         model = _load_model()
@@ -419,7 +473,7 @@ async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
             label = "unclear"
             message = "เสียงไม่ชัดเจน กรุณาอัดเสียงใหม่หากต้องการผลที่แม่นยำขึ้น"
 
-        return {
+        response = {
             "label": label,
             "confidence": confidence,
             "message": message,
@@ -428,9 +482,18 @@ async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
             "model_mode": "demo_model",
             "confidence_calibrated": confidence_calibrated,
         }
+        total_elapsed = time.perf_counter() - request_started
+        logger.info(
+            "predict-cough prediction completed label=%s confidence=%.4f elapsed=%.3fs",
+            label,
+            confidence,
+            total_elapsed,
+        )
+        logger.info("predict-cough total processing time %.3fs", total_elapsed)
+        return response
     finally:
         # Clean up the temporary file
-        if os.path.exists(tmp_path):
+        if tmp_path is not None and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
 

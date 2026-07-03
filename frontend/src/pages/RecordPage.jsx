@@ -15,8 +15,8 @@ const TRIGGER_MULTIPLIER = 3.2
 const MIN_BURST_SECONDS = 0.055
 const MAX_BURST_SECONDS = 1.15
 const ACCEPTED_COUGH_CONFIDENCE = 0.7
-const PREDICT_TIMEOUT_MS = 30_000
-const PREDICT_TIMEOUT_MESSAGE = 'การวิเคราะห์ใช้เวลานานเกินไป อาจเกิดจากเซิร์ฟเวอร์กำลังเริ่มทำงาน กรุณาลองใหม่อีกครั้ง'
+const API_TIMEOUT_MS = 60000
+const PREDICT_TIMEOUT_MESSAGE = 'การวิเคราะห์ใช้เวลานานเกินไป กรุณาเปิดระบบอีกครั้งหรือกดตรวจจับใหม่'
 const IDLE_WAVEFORM_LEVELS = Array.from(
   { length: WAVEFORM_BAR_COUNT },
   (_, index) => 0.24 + (index % 5) * 0.07,
@@ -27,7 +27,7 @@ const STATE_TEXT = {
   listening: 'กำลังตรวจจับเสียงไอ... ไอได้เลยเมื่อพร้อม',
   cough_candidate_detected: 'ตรวจพบช่วงเสียงที่คล้ายเสียงไอ กำลังจับช่วงเสียง...',
   capturing: 'กำลังเก็บช่วงเสียงไอให้ครบถ้วน...',
-  analyzing: 'กำลังให้ AI ตรวจว่าเป็นเสียงไอชัดพอหรือไม่...',
+  analyzing: 'กำลังรอผลจาก AI อาจใช้เวลานานในครั้งแรกเนื่องจากเซิร์ฟเวอร์กำลังเริ่มทำงาน',
   retry_listening: 'เสียงยังไม่ชัดพอ กรุณาไออีกครั้ง',
   accepted: 'AI ยืนยันเสียงไอชัดเจน กำลังไปขั้นตอนถัดไป...',
   too_quiet: 'เสียงเบาเกินไป กรุณาขยับเข้าใกล้ไมโครโฟนมากขึ้น',
@@ -327,7 +327,7 @@ function RecordPage() {
     analysisAbortControllerRef.current = controller
     analysisTimeoutRef.current = setTimeout(() => {
       controller.abort()
-    }, PREDICT_TIMEOUT_MS)
+    }, API_TIMEOUT_MS)
 
     try {
       const formData = new FormData()
