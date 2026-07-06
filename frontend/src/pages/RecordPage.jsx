@@ -18,6 +18,12 @@ const ACCEPTED_COUGH_CONFIDENCE = 0.7
 const API_TIMEOUT_MS = 60000
 const HEALTH_RETRY_INTERVAL_MS = 5000
 const HEALTH_MAX_WAIT_MS = 60000
+const COUGH_AUDIO_LABELS = new Set([
+  'dry_cough_like',
+  'wet_cough_like',
+  'frequent_cough_like',
+  'normal_cough_like',
+])
 const SERVER_WAKE_MESSAGE = 'กำลังปลุกเซิร์ฟเวอร์วิเคราะห์เสียง กรุณารอสักครู่...'
 const SERVER_UNAVAILABLE_MESSAGE = 'เซิร์ฟเวอร์วิเคราะห์เสียงยังไม่พร้อม กรุณาลองใหม่อีกครั้ง'
 const PREDICT_TIMEOUT_MESSAGE = 'การวิเคราะห์ใช้เวลานานเกินไป กรุณาเปิดระบบอีกครั้งหรือกดตรวจจับใหม่'
@@ -106,7 +112,8 @@ function getAudioFeatures(samples) {
 }
 
 function isAcceptedCough(aiResult) {
-  return aiResult?.label === 'cough' && Number(aiResult.confidence || 0) >= ACCEPTED_COUGH_CONFIDENCE
+  const coughDetected = aiResult?.coughDetected || aiResult?.label === 'cough' || COUGH_AUDIO_LABELS.has(aiResult?.audioLabel)
+  return coughDetected && Number(aiResult.confidence || 0) >= ACCEPTED_COUGH_CONFIDENCE
 }
 
 function normalizeBackendLabel(label) {
@@ -435,13 +442,24 @@ function RecordPage() {
       }
 
       const data = await res.json()
+      const audioLabel = data.audio_label || null
+      const preliminaryLabel = data.label || data.prediction
+      const coughDetected = Boolean(data.cough_detected || preliminaryLabel === 'cough' || COUGH_AUDIO_LABELS.has(audioLabel))
+      const legacyLabel = preliminaryLabel || (coughDetected ? 'cough' : audioLabel)
       const aiResult = {
-        label: normalizeBackendLabel(data.label || data.prediction),
+        label: normalizeBackendLabel(legacyLabel),
+        audioLabel,
+        coughDetected,
         confidence: data.confidence != null
           ? data.confidence
           : data.probability != null
             ? data.probability
             : 0,
+        coughTypeText: data.cough_type_text || '',
+        audioQuality: data.audio_quality || '',
+        coughFeatures: data.cough_features || null,
+        possibleAssociation: data.possible_association || '',
+        safetyNotice: data.safety_notice || '',
         message: data.message || '',
         quality: data.quality || null,
       }

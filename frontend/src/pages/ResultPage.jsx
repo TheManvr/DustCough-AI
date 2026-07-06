@@ -4,6 +4,44 @@ import { copy } from '../assets/copy'
 import { logos } from '../assets/logos'
 import './ResultPage.css'
 
+const PM25_UNIT_SHORT = '\u00b5g/m\u00b3'
+const HIGH_CONFIDENCE_THRESHOLD = 0.75
+
+const AUDIO_LABEL_TEXT = {
+  dry_cough_like: 'ลักษณะคล้ายไอแห้ง',
+  wet_cough_like: 'ลักษณะคล้ายไอมีเสมหะ',
+  frequent_cough_like: 'ลักษณะคล้ายไอถี่หรือต่อเนื่อง',
+  normal_cough_like: 'ลักษณะคล้ายเสียงไอทั่วไป',
+  non_cough: 'ไม่พบเสียงไอชัดเจน',
+  noise: 'เสียงรบกวน',
+  unclear: 'เสียงไม่ชัดเจน',
+}
+
+const AUDIO_QUALITY_LABELS = {
+  good: 'ดี',
+  too_quiet: 'เสียงเบาเกินไป',
+  too_short: 'เสียงสั้นเกินไป',
+  noise: 'มีเสียงรบกวน',
+  unclear: 'ไม่ชัดเจน',
+}
+
+const COUGH_AUDIO_LABELS = new Set([
+  'dry_cough_like',
+  'wet_cough_like',
+  'frequent_cough_like',
+  'normal_cough_like',
+])
+
+const COUGH_PATTERN_SCORES = {
+  normal_cough_like: 1,
+  dry_cough_like: 1,
+  wet_cough_like: 2,
+  frequent_cough_like: 2,
+  non_cough: 0,
+  noise: 0,
+  unclear: 0,
+}
+
 const SYMPTOM_LABELS = {
   cough: copy.symptomCough,
   sore_throat: copy.symptomSoreThroat,
@@ -11,6 +49,10 @@ const SYMPTOM_LABELS = {
   nasal_congestion: copy.symptomNasal,
   breathing_discomfort: copy.symptomBreathing,
   fatigue: copy.symptomFatigue,
+  severe_breathing_difficulty: 'หายใจลำบากรุนแรง',
+  chest_pain: 'เจ็บหน้าอก',
+  coughing_blood: 'ไอมีเลือดปน',
+  severe_symptoms: 'อาการรุนแรงหรือแย่ลงเร็ว',
 }
 
 const OUTDOOR_LABELS = {
@@ -25,209 +67,204 @@ const MASK_LABELS = {
   never: copy.maskNever,
 }
 
-const getAiLabel = (label) => {
-  if (label === 'cough') return copy.resultDetectedCough
-  if (label === 'uncertain_cough') return copy.recordLabelUncertainCough
-  if (label === 'non_cough') return copy.recordLabelNonCough
-  if (label === 'too_quiet') return copy.recordLabelTooQuiet
-  if (label === 'too_short') return copy.recordLabelTooShort
-  if (label === 'noise' || label === 'unclear') return copy.recordLabelUnclear
-  return copy.recordLabelUnknown
-}
+const RED_FLAG_SYMPTOMS = new Set([
+  'severe_breathing_difficulty',
+  'chest_pain',
+  'coughing_blood',
+  'severe_symptoms',
+])
 
-const getPm25Label = (value) => {
-  if (value < 37.5) return copy.resultPm25Low
-  if (value <= 75) return copy.resultPm25Medium
-  return copy.resultPm25High
-}
-
-const PM25_UNIT_SHORT = '\u00b5g/m\u00b3'
-
-const resultCopy = {
-  noiseRecommendation: copy.resultNoiseRecommendation,
-  noiseIgnored: copy.resultNoiseIgnored,
-  pm25Status: copy.resultPm25Status,
-  scoreTotal: copy.resultScoreTotal,
-  disclaimer: copy.resultDisclaimerClear,
-}
-
-const RESULT_SUMMARIES = {
+const RISK_LEVELS = {
   low: {
-    description: copy.resultSummaryLow,
-    actions: [copy.adviceLow1Clear, copy.adviceLow2Clear, copy.adviceLow3Clear],
+    label: 'ต่ำ',
+    title: 'ความเสี่ยงเบื้องต้นต่ำ',
+    description: 'คะแนนรวมอยู่ในช่วงต่ำ ควรติดตามค่า PM2.5 และสังเกตอาการต่อเนื่อง',
+    recommendations: [
+      'ติดตามค่า PM2.5 และหลีกเลี่ยงฝุ่นเมื่อค่าเริ่มสูง',
+      'ดื่มน้ำและพักเสียง หากมีอาการระคายคอ',
+      'สังเกตอาการต่อเนื่อง หากอาการเพิ่มขึ้นควรแจ้งผู้ปกครอง',
+    ],
   },
   medium: {
-    description: copy.resultSummaryMedium,
-    actions: [
-      copy.adviceMedium1Clear,
-      copy.adviceMedium2Clear,
-      copy.adviceMedium3Clear,
-      copy.adviceMedium4Clear,
+    label: 'ปานกลาง',
+    title: 'ความเสี่ยงเบื้องต้นปานกลาง',
+    description: 'คะแนนรวมอยู่ในช่วงที่ควรลดการสัมผัสฝุ่นและติดตามอาการใกล้ชิดขึ้น',
+    recommendations: [
+      'ลดกิจกรรมนอกอาคารและอยู่ในพื้นที่อากาศถ่ายเทดี',
+      'สวมหน้ากากที่เหมาะสมเมื่อต้องออกนอกอาคาร',
+      'ติดตามอาการและค่า PM2.5 ในช่วง 24 ชั่วโมงถัดไป',
+      'แจ้งผู้ปกครองหากหายใจไม่สบายหรืออาการแย่ลง',
     ],
   },
   high: {
-    description: copy.resultSummaryHigh,
-    actions: [
-      copy.adviceHigh1Clear,
-      copy.adviceHigh2Clear,
-      copy.adviceHigh3Clear,
-      copy.adviceHigh4Clear,
+    label: 'สูง',
+    title: 'ความเสี่ยงเบื้องต้นสูง',
+    description: 'คะแนนรวมอยู่ในช่วงสูง ควรลดการสัมผัสฝุ่นและให้ผู้ปกครองช่วยติดตามอาการ',
+    recommendations: [
+      'หลีกเลี่ยงกิจกรรมนอกอาคารและลดการสัมผัสฝุ่น',
+      'สวมหน้ากากที่เหมาะสมเมื่อต้องอยู่ในพื้นที่เสี่ยง',
+      'พักผ่อน ดื่มน้ำ และแจ้งผู้ปกครองให้ช่วยติดตามอาการ',
+      'หากมีอาการรุนแรง ควรปรึกษาแพทย์/บุคลากรทางการแพทย์',
     ],
   },
 }
 
-const isUnclearAudio = (label) => !label || label === 'noise' || label === 'unknown' || label === 'unclear'
-const isRetryAudio = (label) => isUnclearAudio(label) || label === 'too_quiet' || label === 'too_short'
-const isPartialAudio = (label) => label === 'uncertain_cough'
+const SAFETY_NOTICE =
+  'ระบบนี้เป็นเพียงเครื่องมือคัดกรองและสร้างความตระหนักด้านสุขภาพเบื้องต้น ไม่ใช่เครื่องมือวินิจฉัยโรค'
+
+const RED_FLAG_WARNING =
+  'พบอาการที่ควรเฝ้าระวังเป็นพิเศษ ควรแจ้งผู้ปกครองหรือปรึกษาแพทย์/บุคลากรทางการแพทย์'
+
+const formatPercent = (value) => `${Math.round((Number(value) || 0) * 100)}%`
+
+const getPm25Label = (value) => {
+  if (value < 37.5) return 'อยู่ในเกณฑ์ต่ำ'
+  if (value <= 75) return 'อยู่ในเกณฑ์ปานกลาง'
+  return 'อยู่ในเกณฑ์สูง'
+}
+
+const getAudioLabel = (aiResult) => {
+  if (aiResult?.audioLabel) return aiResult.audioLabel
+  if (aiResult?.audio_label) return aiResult.audio_label
+  if (aiResult?.label === 'cough' || aiResult?.label === 'uncertain_cough') return 'normal_cough_like'
+  if (aiResult?.label === 'non_cough') return 'non_cough'
+  if (aiResult?.label === 'noise') return 'noise'
+  return 'unclear'
+}
+
+const getCoughTypeText = (aiResult) => {
+  const audioLabel = getAudioLabel(aiResult)
+  return aiResult?.coughTypeText || aiResult?.cough_type_text || AUDIO_LABEL_TEXT[audioLabel] || AUDIO_LABEL_TEXT.unclear
+}
+
+const getAudioQuality = (aiResult) => {
+  return aiResult?.audioQuality || aiResult?.audio_quality || aiResult?.quality?.label || 'good'
+}
+
+const getFeatureValue = (features, key, fallback = 0) => {
+  const value = Number(features?.[key])
+  return Number.isFinite(value) ? value : fallback
+}
+
+const getSymptomNames = (symptoms) => {
+  return symptoms.map((symptom) => SYMPTOM_LABELS[symptom] || symptom)
+}
 
 function ResultPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const { aiResult, pm25, symptoms = [], outdoor, mask } = location.state || {}
 
+  const audioLabel = getAudioLabel(aiResult)
+  const coughTypeText = getCoughTypeText(aiResult)
+  const confidence = Number(aiResult?.confidence) || 0
+  const audioQuality = getAudioQuality(aiResult)
+  const coughFeatures = aiResult?.coughFeatures || aiResult?.cough_features || {}
+  const symptomNames = getSymptomNames(symptoms)
+  const hasRedFlag = symptoms.some((symptom) => RED_FLAG_SYMPTOMS.has(symptom))
+
   const riskData = useMemo(() => {
-    let score = 0
-    const breakdown = []
     const pm25Val = Number(pm25) || 0
+    const coughDetected = Boolean(
+      aiResult?.coughDetected ||
+      aiResult?.cough_detected ||
+      COUGH_AUDIO_LABELS.has(audioLabel)
+    )
 
-    if (pm25Val < 37.5) {
-      breakdown.push({ label: copy.resultBreakdownPm25, detail: `${pm25Val} ${copy.resultPm25Unit}`, points: 0 })
-    } else if (pm25Val <= 75) {
-      score += 1
-      breakdown.push({ label: copy.resultBreakdownPm25, detail: `${pm25Val} ${copy.resultPm25Unit}`, points: 1 })
-    } else {
-      score += 2
-      breakdown.push({ label: copy.resultBreakdownPm25, detail: `${pm25Val} ${copy.resultPm25Unit}`, points: 2 })
-    }
+    const audioScore = coughDetected && COUGH_AUDIO_LABELS.has(audioLabel)
+      ? confidence >= HIGH_CONFIDENCE_THRESHOLD
+        ? 2
+        : 1
+      : 0
 
-    if (aiResult?.label === 'cough') {
-      score += 2
-      breakdown.push({ label: copy.resultBreakdownAudio, detail: copy.recordLabelCough, points: 2 })
-    } else if (aiResult?.label === 'uncertain_cough') {
-      score += 1
-      breakdown.push({
-        label: copy.resultBreakdownAudio,
-        detail: copy.recordLabelUncertainCough,
-        points: 1,
-      })
-    } else if (isRetryAudio(aiResult?.label)) {
-      breakdown.push({
-        label: copy.resultBreakdownAudio,
-        detail: aiResult?.message || resultCopy.noiseIgnored,
-        points: 0,
-        tone: 'muted',
-      })
-    } else {
-      breakdown.push({ label: copy.resultBreakdownAudio, detail: getAiLabel(aiResult?.label), points: 0 })
-    }
+    const coughPatternScore = COUGH_PATTERN_SCORES[audioLabel] ?? 0
 
-    const symptomCount = symptoms.length
-    if (symptomCount >= 3) {
-      score += 2
-      breakdown.push({
-        label: copy.resultBreakdownSymptoms,
-        detail: `${copy.resultSymptomFound} ${symptomCount} ${copy.resultItems}`,
-        points: 2,
-      })
-    } else if (symptomCount >= 1) {
-      score += 1
-      breakdown.push({
-        label: copy.resultBreakdownSymptoms,
-        detail: `${copy.resultSymptomFound} ${symptomCount} ${copy.resultItems}`,
-        points: 1,
-      })
-    } else {
-      breakdown.push({ label: copy.resultBreakdownSymptoms, detail: copy.resultNoJointSymptoms, points: 0 })
-    }
+    let pm25Score = 0
+    if (pm25Val > 75) pm25Score = 2
+    else if (pm25Val >= 37.5) pm25Score = 1
 
-    if (outdoor === 'more_3' || mask === 'never') {
-      score += 1
-      const reasons = []
-      if (outdoor === 'more_3') reasons.push(copy.resultReasonOutdoor)
-      if (mask === 'never') reasons.push(copy.resultReasonNoMask)
-      breakdown.push({ label: copy.resultBreakdownExposure, detail: reasons.join(', '), points: 1 })
-    } else {
-      breakdown.push({ label: copy.resultBreakdownExposure, detail: copy.resultGeneralWatch, points: 0 })
-    }
+    let symptomScore = 0
+    if (symptoms.length === 1) symptomScore = 1
+    else if (symptoms.length >= 2 && symptoms.length <= 3) symptomScore = 2
+    else if (symptoms.length > 3) symptomScore = 3
+    if (symptoms.includes('breathing_discomfort')) symptomScore += 1
 
-    let level = 'low'
-    let levelLabel = copy.resultRiskLow
-    let levelDescription = copy.resultRiskLowDesc
+    const exposureScore = outdoor === 'more_3' ? 2 : outdoor === '1_3' ? 1 : 0
+    const protectionScore = mask === 'never' ? 2 : mask === 'sometimes' ? 1 : 0
+    const total = audioScore + coughPatternScore + pm25Score + symptomScore + exposureScore + protectionScore
+    const level = total >= 8 ? 'high' : total >= 4 ? 'medium' : 'low'
 
-    if (score >= 6) {
-      level = 'high'
-      levelLabel = copy.resultRiskHigh
-      levelDescription = copy.resultRiskHighDesc
-    } else if (score >= 3) {
-      level = 'medium'
-      levelLabel = copy.resultRiskMedium
-      levelDescription = copy.resultRiskMediumDesc
-    }
-
-    return { score, breakdown, level, levelLabel, levelDescription, maxScore: 7 }
-  }, [aiResult, pm25, symptoms, outdoor, mask])
-
-  const advice = useMemo(() => {
-    return RESULT_SUMMARIES[riskData.level]?.actions || RESULT_SUMMARIES.low.actions
-  }, [riskData.level])
-
-  const resultSummary = RESULT_SUMMARIES[riskData.level] || RESULT_SUMMARIES.low
-  const audioNeedsRetry = isRetryAudio(aiResult?.label)
-  const audioPartial = isPartialAudio(aiResult?.label)
-  const audioUsable = !audioNeedsRetry
-  const aiAnalysis = useMemo(() => {
-    if (aiResult?.label === 'cough') {
-      return {
-        tone: 'cough',
-        label: copy.resultDetectedCough,
-        explanation: copy.resultAiExplainCough,
-        usable: copy.resultAiUsableYes,
-      }
-    }
-
-    if (aiResult?.label === 'uncertain_cough') {
-      return {
-        tone: 'uncertain',
-        label: copy.recordLabelUncertainCough,
-        explanation: aiResult?.message || copy.resultAiExplainUncertainCough,
-        usable: copy.resultAiUsablePartial,
-      }
-    }
-
-    if (aiResult?.label === 'non_cough') {
-      return {
-        tone: 'non-cough',
-        label: copy.recordLabelNonCough,
-        explanation: copy.resultAiExplainNonCough,
-        usable: copy.resultAiUsableYes,
-      }
-    }
-
-    if (aiResult?.label === 'too_quiet') {
-      return {
-        tone: 'unclear',
-        label: copy.recordLabelTooQuiet,
-        explanation: aiResult?.message || copy.resultAiExplainTooQuiet,
-        usable: copy.resultAiUsableRetry,
-      }
-    }
-
-    if (aiResult?.label === 'too_short') {
-      return {
-        tone: 'unclear',
-        label: copy.recordLabelTooShort,
-        explanation: aiResult?.message || copy.resultAiExplainTooShort,
-        usable: copy.resultAiUsableRetry,
-      }
-    }
+    const symptomDetail = symptoms.length > 0
+      ? `${symptoms.length} รายการ: ${getSymptomNames(symptoms).join(', ')}${symptoms.includes('breathing_discomfort') ? ' (+1 หายใจไม่สะดวก)' : ''}`
+      : 'ไม่พบอาการที่ผู้ใช้เลือก'
 
     return {
-      tone: 'unclear',
-      label: copy.recordLabelUnclear,
-      explanation: copy.resultAiExplainUnclear,
-      usable: copy.resultAiUsableRetry,
+      audioScore,
+      coughPatternScore,
+      pm25Score,
+      symptomScore,
+      exposureScore,
+      protectionScore,
+      total,
+      level,
+      maxScore: 14,
+      breakdown: [
+        {
+          label: 'Audio Score',
+          detail: coughDetected ? `${coughTypeText} ความมั่นใจ ${formatPercent(confidence)}` : AUDIO_LABEL_TEXT[audioLabel],
+          points: audioScore,
+        },
+        {
+          label: 'Cough Pattern Score',
+          detail: AUDIO_LABEL_TEXT[audioLabel] || AUDIO_LABEL_TEXT.unclear,
+          points: coughPatternScore,
+        },
+        {
+          label: 'PM2.5 Score',
+          detail: `${pm25Val} ${PM25_UNIT_SHORT} (${getPm25Label(pm25Val)})`,
+          points: pm25Score,
+        },
+        {
+          label: 'Symptom Score',
+          detail: symptomDetail,
+          points: symptomScore,
+        },
+        {
+          label: 'Exposure Score',
+          detail: OUTDOOR_LABELS[outdoor] || 'ไม่ระบุ',
+          points: exposureScore,
+        },
+        {
+          label: 'Protection Score',
+          detail: MASK_LABELS[mask] || 'ไม่ระบุ',
+          points: protectionScore,
+        },
+      ],
     }
-  }, [aiResult])
+  }, [aiResult, audioLabel, confidence, coughTypeText, mask, outdoor, pm25, symptoms])
+
+  const associationText = useMemo(() => {
+    const pm25Val = Number(pm25) || 0
+    const symptomClause = symptomNames.length > 0
+      ? `ร่วมกับอาการที่ผู้ใช้กรอก (${symptomNames.join(', ')})`
+      : 'โดยยังไม่มีอาการร่วมที่ผู้ใช้เลือก'
+
+    if (COUGH_AUDIO_LABELS.has(audioLabel)) {
+      return `${coughTypeText} ${symptomClause} และค่า PM2.5 ${pm25Val} ${PM25_UNIT_SHORT} อาจสัมพันธ์กับการระคายคอหรือการระคายเคืองทางเดินหายใจ ควรใช้ร่วมกับอาการที่ผู้ใช้กรอกและค่า PM2.5`
+    }
+
+    if (aiResult?.possibleAssociation || aiResult?.possible_association) {
+      return `${aiResult.possibleAssociation || aiResult.possible_association} ค่า PM2.5 ที่กรอกคือ ${pm25Val} ${PM25_UNIT_SHORT}`
+    }
+
+    return `ลักษณะเสียงยังไม่ชัดเจน ${symptomClause} และค่า PM2.5 ${pm25Val} ${PM25_UNIT_SHORT} ควรใช้เป็นข้อมูลคัดกรองเบื้องต้นเท่านั้น`
+  }, [aiResult, audioLabel, coughTypeText, pm25, symptomNames])
+
+  const riskLevel = RISK_LEVELS[riskData.level]
+  const featureDuration = getFeatureValue(coughFeatures, 'duration_sec')
+  const featureRms = getFeatureValue(coughFeatures, 'rms_level')
+  const featurePeak = getFeatureValue(coughFeatures, 'peak_level')
+  const featureBursts = getFeatureValue(coughFeatures, 'burst_count')
 
   if (!location.state) {
     return (
@@ -256,120 +293,115 @@ function ResultPage() {
 
       <section className="page-heading result-heading">
         <div>
-          <p className="section-kicker">{copy.resultMvpKicker}</p>
-          <h2>{copy.resultMvpTitle}</h2>
-          <p>{copy.resultMvpDescription}</p>
+          <p className="section-kicker">ผลการวิเคราะห์แบบ 3 ชั้น</p>
+          <h2>ผลคัดกรองเสียงไอและความเสี่ยงจากฝุ่น</h2>
+          <p>สรุปลักษณะเสียงที่ระบบตรวจพบ ร่วมกับอาการที่กรอก ค่า PM2.5 เวลาอยู่กลางแจ้ง และการสวมหน้ากาก</p>
         </div>
         <img className="page-symbol result-emblem" src={logos.emblem} alt={copy.resultEmblemAlt} />
       </section>
 
-      <section className={`ai-analysis-card ai-analysis-${aiAnalysis.tone}`}>
+      <section className={`ai-analysis-card ai-analysis-${audioLabel}`}>
         <div className="ai-analysis-header">
           <img src={logos.abstractMark} alt="" aria-hidden="true" />
           <div>
-            <p className="section-kicker">{copy.resultPrimaryAudio}</p>
-            <h3>{copy.resultAiCardTitle}</h3>
+            <p className="section-kicker">1. AI Cough Type</p>
+            <h3>AI cough analysis</h3>
           </div>
         </div>
+
         <div className="ai-analysis-grid">
           <div className="ai-analysis-main">
-            <span>{copy.resultAiLabel}</span>
-            <strong>{aiAnalysis.label}</strong>
+            <span>ลักษณะเสียงที่ระบบตรวจพบ</span>
+            <strong>{coughTypeText}</strong>
           </div>
           <div>
-            <span>{copy.resultAiConfidence}</span>
-            <strong>{Math.round((aiResult?.confidence || 0) * 100)}%</strong>
+            <span>Confidence</span>
+            <strong>{formatPercent(confidence)}</strong>
           </div>
-          <div className={audioUsable ? 'usable-yes' : 'usable-no'}>
-            <span>{copy.resultAiUsable}</span>
-            <strong>{aiAnalysis.usable}</strong>
+          <div>
+            <span>Audio quality</span>
+            <strong>{AUDIO_QUALITY_LABELS[audioQuality] || audioQuality || 'ไม่ระบุ'}</strong>
           </div>
         </div>
-        <p>{aiAnalysis.explanation}</p>
+
+        <div className="audio-feature-grid" aria-label="รายละเอียดคุณลักษณะเสียง">
+          <div>
+            <span>Burst count</span>
+            <strong>{featureBursts}</strong>
+          </div>
+          <div>
+            <span>Duration</span>
+            <strong>{featureDuration.toFixed(2)} s</strong>
+          </div>
+          <div>
+            <span>RMS</span>
+            <strong>{featureRms.toFixed(4)}</strong>
+          </div>
+          <div>
+            <span>Peak</span>
+            <strong>{featurePeak.toFixed(4)}</strong>
+          </div>
+        </div>
       </section>
 
-      <section className="summary-card card supporting-context-card">
+      <section className="analysis-card possible-association-card card">
         <div className="summary-header">
-          <h3>{copy.resultSupportingEnvSymptoms || copy.resultDataUsedAiFirst}</h3>
-        </div>
-        <div className="summary-list">
-          <div className="summary-row">
-            <span>{copy.resultPm25}</span>
-            <div className="summary-value pm25-value">
-              <strong>{copy.resultPm25}: {pm25} {PM25_UNIT_SHORT}</strong>
-              <b>{resultCopy.pm25Status}: {getPm25Label(Number(pm25))}</b>
-            </div>
-          </div>
-          <div className="summary-row">
-            <span>{copy.resultSymptoms}</span>
-            <strong>
-              {symptoms.length > 0
-                ? symptoms.map((symptom) => SYMPTOM_LABELS[symptom] || symptom).join(', ')
-                : copy.resultNoSymptoms}
-            </strong>
-          </div>
-          <div className="summary-row">
-            <span>{copy.resultOutdoor}</span>
-            <strong>{OUTDOOR_LABELS[outdoor] || '-'}</strong>
-          </div>
-          <div className="summary-row">
-            <span>{copy.resultMask}</span>
-            <strong>{MASK_LABELS[mask] || '-'}</strong>
+          <div>
+            <p className="section-kicker">2. Possible Symptom Association</p>
+            <h3>ความสัมพันธ์ที่อาจเกี่ยวข้อง</h3>
           </div>
         </div>
-      </section>
-
-      <section className={`result-summary-card result-summary-${riskData.level}`}>
-        <p className="section-kicker">{audioNeedsRetry ? copy.resultSupportingOnly : copy.resultSummaryKicker}</p>
-        {audioNeedsRetry ? (
-          <h3>{aiResult?.label === 'too_quiet' || aiResult?.label === 'too_short' ? copy.resultIncompleteQualityTitle : copy.resultUnableAnalyzeAudio}</h3>
-        ) : (
-          <h3>
-            {copy.resultSummaryTitlePrefix} <span className={`risk-${riskData.level}`}>{riskData.levelLabel}</span>
-          </h3>
-        )}
-        <p>{audioNeedsRetry ? copy.resultRiskContextUnclear : resultSummary.description}</p>
-        {!audioNeedsRetry && (
-          <div className="next-action-panel">
-            <strong>{copy.resultNowActionTitle}</strong>
-            <div className="next-action-grid">
-              {resultSummary.actions.slice(0, 2).map((item, index) => (
-                <article key={item} className="next-action-card">
-                  <span>{index + 1}</span>
-                  <p>{item}</p>
-                </article>
-              ))}
-            </div>
-          </div>
-        )}
+        <p>{associationText}</p>
+        <small>ข้อความนี้ไม่ระบุว่าผู้ใช้มีโรคใด และควรใช้ร่วมกับข้อมูลที่ผู้ใช้กรอกเท่านั้น</small>
       </section>
 
       <section
-        className={`risk-overview risk-${riskData.level}-bg`}
-        style={{ '--score-progress': `${(riskData.score / riskData.maxScore) * 360}deg` }}
+        className={`risk-overview risk-${riskData.level}-bg detailed-risk-card`}
+        style={{ '--score-progress': `${(riskData.total / riskData.maxScore) * 360}deg` }}
       >
         <div>
-          <p className="risk-label">{audioNeedsRetry ? copy.resultSupportingOnly : copy.resultPrelimRiskTitle}</p>
-          <h3 className={`risk-${riskData.level}`}>{riskData.levelLabel}</h3>
-          <p>{riskData.levelDescription}</p>
+          <p className="risk-label">3. Detailed Risk Score</p>
+          <h3 className={`risk-${riskData.level}`}>{riskLevel.title}</h3>
+          <p>{riskLevel.description}</p>
           <small className="score-context">
-            {audioNeedsRetry ? copy.resultRiskContextUnclear : copy.resultRiskContextAi}
-            {audioPartial ? ` ${copy.resultAiUsablePartial}` : ''}
+            Risk Score = Audio Score + Cough Pattern Score + PM2.5 Score + Symptom Score + Exposure Score + Protection Score
           </small>
         </div>
         <div className={`risk-score-display risk-score-${riskData.level}`}>
-          <small>{resultCopy.scoreTotal}</small>
-          <strong>{riskData.score}</strong>
-          <span>{riskData.score} {copy.resultFrom} {riskData.maxScore}</span>
+          <small>Total</small>
+          <strong>{riskData.total}</strong>
+          <span>{riskData.total} จาก {riskData.maxScore}</span>
+        </div>
+
+        <div className="risk-breakdown-list">
+          {riskData.breakdown.map((item) => (
+            <div key={item.label} className="breakdown-row">
+              <div>
+                <strong>{item.label}</strong>
+                <span>{item.detail}</span>
+              </div>
+              <b className={item.points > 0 ? 'has-points' : ''}>+{item.points}</b>
+            </div>
+          ))}
         </div>
       </section>
 
       <section className={`advice-card card advice-${riskData.level}`}>
         <div className="summary-header">
-          <h3>{copy.resultAdvice}</h3>
+          <div>
+            <p className="section-kicker">4. Recommendation</p>
+            <h3>คำแนะนำเบื้องต้นตามระดับความเสี่ยง</h3>
+          </div>
         </div>
+
+        {hasRedFlag && (
+          <div className="red-flag-panel">
+            <strong>{RED_FLAG_WARNING}</strong>
+          </div>
+        )}
+
         <div className="advice-action-grid">
-          {advice.map((item, index) => (
+          {riskLevel.recommendations.map((item, index) => (
             <article key={item} className="advice-action-card">
               <span>{index + 1}</span>
               <p>{item}</p>
@@ -378,54 +410,16 @@ function ResultPage() {
         </div>
       </section>
 
-      <section className="breakdown-card card">
-        <div className="summary-header">
-          <h3>{copy.resultBreakdown}</h3>
-        </div>
-        <div className="breakdown-list">
-          <div className="breakdown-group-label">{copy.resultPrimaryAudio}</div>
-          {riskData.breakdown.slice(1, 2).map((item) => (
-            <div key={`${item.label}-${item.detail}`} className={`breakdown-row ${item.tone === 'muted' ? 'breakdown-row-muted' : ''}`}>
-              <div>
-                <strong>{item.label}</strong>
-                <span>{item.detail}</span>
-              </div>
-              <b className={item.points > 0 ? 'has-points' : ''}>+{item.points}</b>
-            </div>
-          ))}
-          <div className="breakdown-group-label">{copy.resultSupportingData}</div>
-          {[riskData.breakdown[0], ...riskData.breakdown.slice(2)].map((item) => (
-            <div key={`${item.label}-${item.detail}`} className={`breakdown-row ${item.tone === 'muted' ? 'breakdown-row-muted' : ''}`}>
-              <div>
-                <strong>{item.label}</strong>
-                <span>{item.detail}</span>
-              </div>
-              <b className={item.points > 0 ? 'has-points' : ''}>+{item.points}</b>
-            </div>
-          ))}
-          <div className="breakdown-total">
-            <span>{copy.resultTotal}</span>
-            <strong className={`risk-${riskData.level}`}>{riskData.score} {copy.resultFrom} {riskData.maxScore}</strong>
-          </div>
-        </div>
-      </section>
-
-      <section className="notice-panel">
-        <h3>{copy.resultHealthWarning}</h3>
-        <p>{copy.resultWarningText}</p>
-      </section>
-
       <section className="disclaimer-panel">
-        <p>{copy.resultDisclaimerSimple || resultCopy.disclaimer}</p>
+        {(aiResult?.safetyNotice || aiResult?.safety_notice) && (
+          <p>{aiResult.safetyNotice || aiResult.safety_notice}</p>
+        )}
+        <p>{SAFETY_NOTICE}</p>
       </section>
 
       <div className="result-actions">
-        <button
-          className="btn btn-primary btn-lg btn-full"
-          onClick={() => navigate(audioNeedsRetry ? '/record' : '/')}
-          type="button"
-        >
-          {audioNeedsRetry ? copy.resultReRecordCoughCta : copy.resultRestart}
+        <button className="btn btn-primary btn-lg btn-full" onClick={() => navigate('/')} type="button">
+          {copy.resultRestart}
         </button>
       </div>
     </div>

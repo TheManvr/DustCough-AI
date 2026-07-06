@@ -10,6 +10,10 @@ const SYMPTOMS = [
   { id: 'nasal_congestion', label: copy.symptomNasal },
   { id: 'breathing_discomfort', label: copy.symptomBreathing },
   { id: 'fatigue', label: copy.symptomFatigue },
+  { id: 'severe_breathing_difficulty', label: 'หายใจลำบากรุนแรง' },
+  { id: 'chest_pain', label: 'เจ็บหน้าอก' },
+  { id: 'coughing_blood', label: 'ไอมีเลือดปน' },
+  { id: 'severe_symptoms', label: 'อาการรุนแรงหรือแย่ลงเร็ว' },
 ]
 
 const OUTDOOR_OPTIONS = [
@@ -25,6 +29,10 @@ const MASK_OPTIONS = [
 ]
 
 const getAiLabel = (label) => {
+  if (label === 'dry_cough_like') return 'ลักษณะคล้ายไอแห้ง'
+  if (label === 'wet_cough_like') return 'ลักษณะคล้ายไอมีเสมหะ'
+  if (label === 'frequent_cough_like') return 'ลักษณะคล้ายไอถี่หรือต่อเนื่อง'
+  if (label === 'normal_cough_like') return 'ลักษณะคล้ายเสียงไอทั่วไป'
   if (label === 'cough') return copy.recordLabelCough
   if (label === 'uncertain_cough') return copy.recordLabelUncertainCough
   if (label === 'non_cough') return copy.recordLabelNonCough
@@ -110,7 +118,7 @@ function SymptomFormPage() {
         <section className="ai-summary card">
           <span className="ai-summary-badge">{copy.symptomAiBadge}</span>
           <div>
-            <strong>{getAiLabel(aiResult.label)}</strong>
+            <strong>{aiResult.coughTypeText || getAiLabel(aiResult.audioLabel || aiResult.label)}</strong>
             <p>{copy.commonConfidence} {Math.round(aiResult.confidence * 100)}%</p>
           </div>
         </section>

@@ -119,6 +119,37 @@
   font-weight: 900;
 }
 
+.audio-feature-grid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.audio-feature-grid > div {
+  display: grid;
+  gap: 5px;
+  min-height: 82px;
+  align-content: center;
+  border: 1px solid rgba(0, 82, 255, 0.12);
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.86);
+  padding: 13px;
+}
+
+.audio-feature-grid span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.audio-feature-grid strong {
+  color: var(--text-primary);
+  font-size: 1.05rem;
+  font-weight: 900;
+}
+
 .ai-analysis-main {
   border-color: rgba(0, 82, 255, 0.22) !important;
   background: linear-gradient(135deg, rgba(0, 82, 255, 0.08), #ffffff) !important;
@@ -183,6 +214,30 @@
 .ai-analysis-unclear .ai-analysis-main strong,
 .ai-analysis-uncertain .ai-analysis-main strong {
   color: var(--risk-medium);
+}
+
+.analysis-card {
+  display: grid;
+  gap: 12px;
+}
+
+.possible-association-card {
+  border-color: rgba(0, 82, 255, 0.14);
+  background:
+    linear-gradient(135deg, rgba(0, 82, 255, 0.055), transparent 50%),
+    var(--surface);
+}
+
+.possible-association-card p {
+  color: var(--text-secondary);
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1.65;
+}
+
+.possible-association-card small {
+  color: var(--text-muted);
+  font-weight: 800;
 }
 
 .summary-card,
@@ -470,6 +525,19 @@
   font-weight: 900;
 }
 
+.detailed-risk-card {
+  align-items: start;
+}
+
+.risk-breakdown-list {
+  position: relative;
+  z-index: 1;
+  grid-column: 1 / -1;
+  display: grid;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
 .risk-overview.risk-low-bg {
   --score-color: var(--risk-low);
   border-color: rgba(21, 128, 61, 0.2);
@@ -609,6 +677,19 @@
   background: var(--risk-low);
 }
 
+.red-flag-panel {
+  border: 1px solid rgba(185, 28, 28, 0.2);
+  border-radius: 18px;
+  background: rgba(254, 226, 226, 0.78);
+  color: var(--risk-high);
+  padding: 14px 16px;
+}
+
+.red-flag-panel strong {
+  color: var(--risk-high);
+  line-height: 1.55;
+}
+
 .disclaimer-panel {
   border: 1px solid rgba(0, 82, 255, 0.14);
   border-radius: 24px;
@@ -620,6 +701,10 @@
   color: var(--text-secondary);
   font-size: 0.92rem;
   font-weight: 800;
+}
+
+.disclaimer-panel p + p {
+  margin-top: 6px;
 }
 
 .result-actions {
@@ -637,6 +722,7 @@
   }
 
   .ai-analysis-grid,
+  .audio-feature-grid,
   .summary-list,
   .next-action-grid,
   .advice-action-grid {

@@ -39,10 +39,28 @@ TARGET_DURATION_SECONDS: float = 5.0
 MIN_RMS_ENERGY: float = 0.008
 MIN_PEAK_AMPLITUDE: float = 0.06
 LOW_CONFIDENCE_THRESHOLD: float = 0.48
+HIGH_CONFIDENCE_THRESHOLD: float = 0.75
 STRONG_NOISE_THRESHOLD: float = 0.88
 AUTO_CAPTURE_ACCEPTANCE_CONFIDENCE: float = 0.72
 MIN_AUTO_CAPTURE_RMS: float = 0.010
 MIN_AUTO_CAPTURE_PEAK: float = 0.055
+
+AUDIO_LABEL_TEXT: Dict[str, str] = {
+    "dry_cough_like": "ลักษณะคล้ายไอแห้ง",
+    "wet_cough_like": "ลักษณะคล้ายไอมีเสมหะ",
+    "frequent_cough_like": "ลักษณะคล้ายไอถี่หรือต่อเนื่อง",
+    "normal_cough_like": "ลักษณะคล้ายเสียงไอทั่วไป",
+    "non_cough": "ไม่พบเสียงไอชัดเจน",
+    "noise": "เสียงรบกวน",
+    "unclear": "เสียงไม่ชัดเจน",
+}
+COUGH_AUDIO_LABELS = {
+    "dry_cough_like",
+    "wet_cough_like",
+    "frequent_cough_like",
+    "normal_cough_like",
+}
+SAFETY_NOTICE = "ผลลัพธ์นี้เป็นเพียงการคัดกรองเบื้องต้น ไม่ใช่การวินิจฉัยโรค"
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("dustcough")
@@ -290,6 +308,209 @@ def _extract_mfcc_features(y: np.ndarray, sr: int) -> np.ndarray:
     return mfcc_mean
 
 
+def _audio_label_from_legacy(label: str, confidence: float) -> str:
+    """Translate legacy model labels into the safer public audio label set."""
+    if label == "noise":
+        return "noise"
+    if label == "non_cough":
+        return "non_cough"
+    if label == "cough" and confidence >= LOW_CONFIDENCE_THRESHOLD:
+        return "normal_cough_like"
+    return "unclear"
+
+
+def _quality_label_from_quality(quality: Dict[str, Any] | None) -> str:
+    """Return a compact audio quality label for the frontend."""
+    if not quality:
+        return "unclear"
+    if quality.get("ok"):
+        return "good"
+    legacy_label = str(quality.get("label") or "")
+    if legacy_label in {"too_quiet", "too_short", "noise"}:
+        return legacy_label
+    return "unclear"
+
+
+def _cough_features_from_quality(quality: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Create the public cough feature block from quality-only data."""
+    quality = quality or {}
+    return {
+        "burst_count": int(quality.get("cough_like_bursts") or 0),
+        "duration_sec": round(float(quality.get("duration_seconds") or 0.0), 2),
+        "rms_level": round(float(quality.get("rms_energy") or 0.0), 4),
+        "peak_level": round(float(quality.get("peak_amplitude") or 0.0), 4),
+    }
+
+
+def _active_audio_segment(y: np.ndarray, sr: int) -> tuple[np.ndarray, float]:
+    """Estimate the active sound span inside an auto-captured cough clip."""
+    if len(y) == 0 or sr <= 0:
+        return y, 0.0
+
+    frame_length = max(256, int(0.035 * sr))
+    hop_length = max(128, int(0.018 * sr))
+    rms_frames = librosa.feature.rms(
+        y=y,
+        frame_length=frame_length,
+        hop_length=hop_length,
+        center=True,
+    )[0]
+
+    if len(rms_frames) == 0:
+        return y, len(y) / sr
+
+    max_rms = float(np.max(rms_frames))
+    median_rms = float(np.median(rms_frames))
+    threshold = max(0.012, median_rms * 2.0, max_rms * 0.24)
+    active_indices = np.where(rms_frames >= threshold)[0]
+
+    if len(active_indices) == 0:
+        return y, len(y) / sr
+
+    start_sample = max(0, int(active_indices[0] * hop_length - frame_length // 2))
+    end_sample = min(len(y), int(active_indices[-1] * hop_length + frame_length))
+    if end_sample <= start_sample:
+        return y, len(y) / sr
+
+    return y[start_sample:end_sample], (end_sample - start_sample) / sr
+
+
+def _extract_cough_analysis_features(
+    y: np.ndarray,
+    sr: int,
+    quality: Dict[str, Any],
+) -> tuple[Dict[str, Any], Dict[str, float]]:
+    """Extract public cough features and internal tone-shape hints."""
+    base_features = _cough_features_from_quality(quality)
+    active_audio, active_duration = _active_audio_segment(y, sr)
+    analysis_audio = active_audio if len(active_audio) else y
+
+    if active_duration > 0:
+        base_features["duration_sec"] = round(active_duration, 2)
+
+    spectral_metrics = {
+        "centroid_hz": 0.0,
+        "rolloff_hz": 0.0,
+        "zero_crossing_rate": 0.0,
+    }
+
+    if len(analysis_audio) == 0:
+        return base_features, spectral_metrics
+
+    try:
+        spectral_metrics["centroid_hz"] = round(
+            float(np.mean(librosa.feature.spectral_centroid(y=analysis_audio, sr=sr))),
+            2,
+        )
+        spectral_metrics["rolloff_hz"] = round(
+            float(np.mean(librosa.feature.spectral_rolloff(y=analysis_audio, sr=sr, roll_percent=0.85))),
+            2,
+        )
+        spectral_metrics["zero_crossing_rate"] = round(
+            float(np.mean(librosa.feature.zero_crossing_rate(y=analysis_audio))),
+            5,
+        )
+    except Exception as exc:
+        logger.debug("spectral feature extraction skipped: %s", exc)
+
+    return base_features, spectral_metrics
+
+
+def _resolve_audio_label(
+    *,
+    label: str,
+    confidence: float,
+    cough_features: Dict[str, Any],
+    spectral_metrics: Dict[str, float] | None = None,
+) -> str:
+    """Choose a safe cough type label without implying any disease."""
+    spectral_metrics = spectral_metrics or {}
+
+    if label == "noise":
+        return "noise"
+    if label == "non_cough":
+        return "non_cough"
+    if label != "cough" or confidence < LOW_CONFIDENCE_THRESHOLD:
+        return "unclear"
+
+    burst_count = int(cough_features.get("burst_count") or 0)
+    duration_sec = float(cough_features.get("duration_sec") or 0.0)
+    rms_level = float(cough_features.get("rms_level") or 0.0)
+    peak_level = float(cough_features.get("peak_level") or 0.0)
+    peak_to_rms = peak_level / max(rms_level, 1e-6)
+    centroid_hz = float(spectral_metrics.get("centroid_hz") or 0.0)
+    zero_crossing_rate = float(spectral_metrics.get("zero_crossing_rate") or 0.0)
+
+    if burst_count >= 3:
+        return "frequent_cough_like"
+
+    short_sharp_sound = (
+        duration_sec <= 1.25
+        and peak_level >= 0.16
+        and peak_to_rms >= 2.8
+    )
+    if short_sharp_sound or (
+        duration_sec <= 1.15
+        and peak_to_rms >= 3.8
+        and zero_crossing_rate >= 0.045
+    ):
+        return "dry_cough_like"
+
+    longer_lower_frequency_sound = (
+        duration_sec >= 1.25
+        and centroid_hz > 0
+        and centroid_hz <= 1700
+        and zero_crossing_rate <= 0.075
+    )
+    if longer_lower_frequency_sound or (
+        duration_sec >= 1.65
+        and centroid_hz > 0
+        and centroid_hz <= 2100
+        and peak_to_rms < 4.5
+    ):
+        return "wet_cough_like"
+
+    return "normal_cough_like"
+
+
+def _build_possible_association(audio_label: str) -> str:
+    """Return cautious association text that avoids disease claims."""
+    if audio_label == "dry_cough_like":
+        return (
+            "ลักษณะเสียงที่ระบบตรวจพบคล้ายไอแห้ง อาจสัมพันธ์กับการระคายคอ"
+            "หรือการระคายเคืองทางเดินหายใจ ควรใช้ร่วมกับอาการที่ผู้ใช้กรอกและค่า PM2.5"
+        )
+    if audio_label == "wet_cough_like":
+        return (
+            "ลักษณะเสียงที่ระบบตรวจพบคล้ายไอมีเสมหะ อาจสัมพันธ์กับการระคายเคืองทางเดินหายใจ"
+            "หรือสารระคายเคืองในอากาศ ควรใช้ร่วมกับอาการที่ผู้ใช้กรอกและค่า PM2.5"
+        )
+    if audio_label == "frequent_cough_like":
+        return (
+            "ลักษณะเสียงที่ระบบตรวจพบคล้ายไอถี่หรือต่อเนื่อง อาจสัมพันธ์กับการระคายคอ"
+            "หรือการระคายเคืองทางเดินหายใจ ควรใช้ร่วมกับอาการที่ผู้ใช้กรอกและค่า PM2.5"
+        )
+    if audio_label == "normal_cough_like":
+        return (
+            "ลักษณะเสียงที่ระบบตรวจพบคล้ายเสียงไอทั่วไป ควรใช้ร่วมกับอาการที่ผู้ใช้กรอก"
+            " ค่า PM2.5 และบริบทการสัมผัสฝุ่น"
+        )
+    if audio_label == "non_cough":
+        return (
+            "ไม่พบเสียงไอชัดเจนจากไฟล์เสียงนี้ ควรใช้ร่วมกับอาการที่ผู้ใช้กรอก"
+            "และค่า PM2.5 เพื่อประเมินความเสี่ยงเบื้องต้น"
+        )
+    if audio_label == "noise":
+        return (
+            "เสียงมีลักษณะเป็นเสียงรบกวน จึงยังไม่ควรใช้สรุปลักษณะเสียงไอ"
+            " ควรบันทึกใหม่ในที่เงียบขึ้นและใช้ร่วมกับอาการที่ผู้ใช้กรอก"
+        )
+    return (
+        "เสียงยังไม่ชัดเจนพอสำหรับสรุปลักษณะเสียงไอ ควรใช้ร่วมกับอาการที่ผู้ใช้กรอก"
+        "และค่า PM2.5 หรือบันทึกเสียงใหม่หากต้องการวิเคราะห์อีกครั้ง"
+    )
+
+
 def _safe_prediction_response(
     *,
     label: str = "unclear",
@@ -300,11 +521,25 @@ def _safe_prediction_response(
     confidence_calibrated: bool = False,
     model_loaded: bool = False,
     model_mode: str = "demo_model",
+    audio_label: str | None = None,
+    audio_quality: str | None = None,
+    cough_features: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Build a stable HTTP 200 prediction response for the frontend."""
+    public_audio_label = audio_label or _audio_label_from_legacy(label, float(confidence))
+    public_cough_features = cough_features or _cough_features_from_quality(quality)
+    public_audio_quality = audio_quality or _quality_label_from_quality(quality)
+
     return {
         "label": label,
+        "audio_label": public_audio_label,
+        "cough_detected": public_audio_label in COUGH_AUDIO_LABELS,
         "confidence": round(float(confidence), 4),
+        "cough_type_text": AUDIO_LABEL_TEXT.get(public_audio_label, AUDIO_LABEL_TEXT["unclear"]),
+        "audio_quality": public_audio_quality,
+        "cough_features": public_cough_features,
+        "possible_association": _build_possible_association(public_audio_label),
+        "safety_notice": SAFETY_NOTICE,
         "message": message,
         "probabilities": probabilities or {},
         "quality": quality or {},
@@ -316,16 +551,21 @@ def _safe_prediction_response(
 
 def _normalize_prediction_label(prediction: str) -> str:
     """Map model-specific labels into the small public API label set."""
-    if prediction in {"cough", "non_cough", "too_quiet", "too_short", "unclear"}:
+    if prediction in {"cough", "non_cough", "noise", "too_quiet", "too_short", "unclear"}:
         return prediction
     return "unclear"
 
 
-def _demo_heuristic_prediction(quality: Dict[str, Any]) -> Dict[str, Any]:
+def _demo_heuristic_prediction(
+    quality: Dict[str, Any],
+    cough_features: Dict[str, Any] | None = None,
+    spectral_metrics: Dict[str, float] | None = None,
+) -> Dict[str, Any]:
     """Fallback cough screening when the demo model artifact is unavailable."""
     cough_like_bursts = int(quality.get("cough_like_bursts") or 0)
     rms_energy = float(quality.get("rms_energy") or 0.0)
     peak_amplitude = float(quality.get("peak_amplitude") or 0.0)
+    public_cough_features = cough_features or _cough_features_from_quality(quality)
 
     if cough_like_bursts >= 1 and rms_energy >= MIN_AUTO_CAPTURE_RMS and peak_amplitude >= MIN_AUTO_CAPTURE_PEAK:
         return _safe_prediction_response(
@@ -340,6 +580,13 @@ def _demo_heuristic_prediction(quality: Dict[str, Any]) -> Dict[str, Any]:
             confidence_calibrated=True,
             model_loaded=False,
             model_mode="demo_heuristic_fallback",
+            audio_label=_resolve_audio_label(
+                label="cough",
+                confidence=AUTO_CAPTURE_ACCEPTANCE_CONFIDENCE,
+                cough_features=public_cough_features,
+                spectral_metrics=spectral_metrics,
+            ),
+            cough_features=public_cough_features,
         )
 
     if cough_like_bursts >= 1:
@@ -351,6 +598,8 @@ def _demo_heuristic_prediction(quality: Dict[str, Any]) -> Dict[str, Any]:
             probabilities={"unclear": 0.45},
             model_loaded=False,
             model_mode="demo_heuristic_fallback",
+            audio_label="unclear",
+            cough_features=public_cough_features,
         )
 
     return _safe_prediction_response(
@@ -361,6 +610,8 @@ def _demo_heuristic_prediction(quality: Dict[str, Any]) -> Dict[str, Any]:
         probabilities={"non_cough": 0.55},
         model_loaded=False,
         model_mode="demo_heuristic_fallback",
+        audio_label="non_cough",
+        cough_features=public_cough_features,
     )
 
 
@@ -457,6 +708,7 @@ async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
         )
 
         quality = _check_audio_quality(raw_audio, sr)
+        cough_features, spectral_metrics = _extract_cough_analysis_features(raw_audio, sr, quality)
         cough_like_burst = bool(int(quality["cough_like_bursts"]))
         logger.info(
             "predict-cough audio quality duration=%.3fs rms=%.5f peak=%.5f cough_like_burst=%s",
@@ -473,6 +725,8 @@ async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
                 message=quality["message"],
                 quality=quality,
                 model_mode="quality_check",
+                audio_label="unclear",
+                cough_features=cough_features,
             )
             logger.info("predict-cough model loaded=false")
             _log_final_prediction(response, request_started)
@@ -484,7 +738,7 @@ async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
 
         if model is None:
             logger.warning("Model unavailable, using demo heuristic fallback")
-            response = _demo_heuristic_prediction(quality)
+            response = _demo_heuristic_prediction(quality, cough_features, spectral_metrics)
             _log_final_prediction(response, request_started)
             return response
 
@@ -533,6 +787,9 @@ async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
                     "ระบบตรวจพบช่วงเสียงที่มีรูปแบบคล้ายเสียงไอและคุณภาพเสียงเพียงพอ "
                     "สำหรับการคัดกรองเบื้องต้น"
                 )
+            elif label == "cough" and confidence < LOW_CONFIDENCE_THRESHOLD:
+                label = "unclear"
+                message = "เสียงยังไม่ชัดเจนพอสำหรับสรุปลักษณะเสียงไอ กรุณาลองใหม่อีกครั้ง"
             elif cough_like_bursts >= 1 and (
                 label == "unclear"
                 or confidence < LOW_CONFIDENCE_THRESHOLD
@@ -547,6 +804,16 @@ async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
             elif label == "non_cough":
                 message = "ยังไม่พบรูปแบบเสียงไอที่ชัดเจน"
 
+            if label == "noise" and message is None:
+                message = "เสียงมีลักษณะเป็นเสียงรบกวน กรุณาลองบันทึกใหม่ในที่เงียบขึ้น"
+
+            audio_label = _resolve_audio_label(
+                label=label,
+                confidence=confidence,
+                cough_features=cough_features,
+                spectral_metrics=spectral_metrics,
+            )
+
             response = _safe_prediction_response(
                 label=label,
                 confidence=confidence,
@@ -556,11 +823,13 @@ async def predict_cough(file: UploadFile = File(...)) -> Dict[str, Any]:
                 confidence_calibrated=confidence_calibrated,
                 model_loaded=True,
                 model_mode="demo_model",
+                audio_label=audio_label,
+                cough_features=cough_features,
             )
         except Exception as exc:
             logger.exception(exc)
             logger.warning("Model unavailable, using demo heuristic fallback")
-            response = _demo_heuristic_prediction(quality)
+            response = _demo_heuristic_prediction(quality, cough_features, spectral_metrics)
 
         _log_final_prediction(response, request_started)
         return response
